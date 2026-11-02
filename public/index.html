@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>bexio Lieferportal</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="wrap">
+    <section id="setupCard" class="card auth-card" hidden>
+      <h1>Lieferportal einrichten</h1>
+      <p class="muted">Einmalige Ersteinrichtung. Lege jetzt das erste Admin-Konto an.</p>
+      <form id="setupForm">
+        <label>Benutzername<input id="setupUsername" autocomplete="username" value="admin" minlength="3" maxlength="64" required></label>
+        <label>Passwort<input id="setupPassword" type="password" autocomplete="new-password" minlength="12" required></label>
+        <label>Passwort wiederholen<input id="setupPasswordConfirm" type="password" autocomplete="new-password" minlength="12" required></label>
+        <button type="submit">Admin-Konto erstellen</button>
+      </form>
+      <div id="setupMsg" class="msg"></div>
+    </section>
+
+    <section id="loginCard" class="card auth-card">
+      <h1>bexio Lieferportal</h1>
+      <p class="muted">Interne Erfassung von Lieferungen und Sammellieferscheinen.</p>
+      <form id="loginForm">
+        <label>Benutzername<input id="username" autocomplete="username" value="admin" required></label>
+        <label>Passwort<input id="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">Anmelden</button>
+      </form>
+      <div id="loginMsg" class="msg"></div>
+    </section>
+
+
+    <section id="app" hidden>
+      <header class="topbar">
+        <div><h1>bexio Lieferportal</h1><div id="modeBadge" class="badge"></div></div>
+        <div class="actions"><button id="reportingBtn" class="secondary">Auswertung</button><button id="productAdminBtn" class="secondary" hidden>Produkte verwalten</button><button id="bexioBtn" class="secondary">bexio verbinden</button><button id="logoutBtn" class="secondary">Abmelden</button></div>
+      </header>
+
+      <section class="grid two">
+        <div class="card">
+          <h2>Neue Bestellung</h2>
+          <label>Kunde
+            <input id="contactSearch" placeholder="Kunde suchen …" autocomplete="off">
+          </label>
+          <div id="contactResults" class="results"></div>
+          <div id="selectedContact" class="selected" hidden></div>
+          <label>Lieferdatum<input id="deliveryDate" type="date"></label>
+
+          <div class="row-head"><h3>Produkte</h3></div>
+          <div id="items"></div>
+          <button id="addItemBtn" class="secondary small add-product-btn" type="button">+ Produkt</button>
+          <button id="saveDraftBtn" class="save-draft-btn" type="button">Bestellung hinzufügen</button>
+          <div id="draftMsg" class="msg"></div>
+        </div>
+
+        <div class="card">
+          <div class="row-head"><h2>Tages-/Warteliste</h2><button id="refreshBtn" class="secondary small">Aktualisieren</button></div>
+          <div class="toolbar">
+            <button id="processAllOpenBtn">Alle offenen Lieferscheine erstellen</button>
+            <button id="printAllCreatedBtn" class="secondary">Alle erstellten drucken</button>
+            <button id="archiveAllVisibleBtn" class="danger">Alle sichtbaren archivieren</button>
+            <button id="processSelectedBtn" class="secondary">Ausgewählte erstellen</button>
+            <button id="printSelectedBtn" class="secondary">Ausgewählte drucken</button>
+          </div>
+          <div id="drafts"></div>
+        </div>
+      </section>
+
+
+
+      <section class="card" id="reportingCard" hidden>
+        <div class="row-head">
+          <div>
+            <h2>Monatsauswertung</h2>
+            <p class="muted admin-sub">Verkäufe aus erstellten Lieferscheinen plus manuelle Umsätze.</p>
+          </div>
+          <button id="closeReportingBtn" class="secondary small" type="button">Schließen</button>
+        </div>
+
+        <div class="report-toolbar">
+          <label>Monat<input id="reportMonth" type="month"></label>
+          <button id="loadReportBtn" type="button">Auswertung laden</button>
+        </div>
+
+        <div id="reportSummary" class="summary-grid"></div>
+        <div id="reportWarning" class="msg"></div>
+
+        <div class="report-grid">
+          <div>
+            <h3>Nach Produkt / Sorte</h3>
+            <div class="table-wrap"><table class="report-table">
+              <thead><tr><th>Produkt</th><th>Menge</th><th>Umsatz</th><th>Kunden</th></tr></thead>
+              <tbody id="productReportRows"></tbody>
+            </table></div>
+          </div>
+          <div>
+            <h3>Nach Kunde</h3>
+            <div class="table-wrap"><table class="report-table">
+              <thead><tr><th>Kunde</th><th>kg</th><th>Umsatz</th><th>Lieferungen</th></tr></thead>
+              <tbody id="customerReportRows"></tbody>
+            </table></div>
+          </div>
+        </div>
+
+        <hr class="section-rule">
+        <div class="row-head"><div><h3>Manuelle Buchung</h3><p class="muted admin-sub">Nur für die Auswertung – keine Synchronisation mit bexio.</p></div></div>
+        <div class="manual-sale-grid">
+          <label>Datum<input id="manualSaleDate" type="date"></label>
+          <label>Vorauswahl
+            <select id="manualSaleCategory">
+              <option>TWINT</option>
+              <option>Märit Bern</option>
+              <option>Märit Thun</option>
+              <option>Bar</option>
+            </select>
+          </label>
+
+          <div id="manualStandardFields" class="manual-field-group">
+            <label>Betrag CHF<input id="manualSaleAmount" type="number" min="0" step="0.05" placeholder="0.00"></label>
+            <label>Produkt optional<select id="manualSaleArticle"><option value="">– kein Produkt –</option></select></label>
+            <label>Menge optional<input id="manualSaleQuantity" type="number" min="0.001" step="0.001" placeholder="z.B. 2.5"></label>
+          </div>
+
+          <div id="manualBernFields" class="manual-bern-fields" hidden>
+            <label>Person
+              <select id="manualSalePerson">
+                <option>Victoria</option>
+                <option>Sali</option>
+              </select>
+            </label>
+            <label>Bar CHF<input id="manualSaleCash" type="number" min="0" step="0.05" placeholder="0.00"></label>
+            <label>TWINT CHF<input id="manualSaleTwint" type="number" min="0" step="0.05" placeholder="0.00"></label>
+            <div class="bern-total">Tagesumsatz: <strong id="manualBernTotal">CHF 0.00</strong></div>
+          </div>
+
+          <label class="manual-note">Notiz<input id="manualSaleNote" maxlength="500" placeholder="z.B. Tagesumsatz Märit"></label>
+        </div>
+        <button id="saveManualSaleBtn" type="button">Manuelle Buchung speichern</button>
+        <div id="manualSaleMsg" class="msg"></div>
+
+
+        <hr class="section-rule">
+        <h3>Lohn Märit Bern</h3>
+        <p class="muted admin-sub">Bis CHF 600 Tagesumsatz: CHF 200 Lohn. Über CHF 600 zusätzlich 30% des Mehrumsatzes. Danach 6.4% Abzug.</p>
+        <div id="marketPayrollCards" class="payroll-grid"></div>
+        <div class="table-wrap"><table class="report-table">
+          <thead><tr><th>Person</th><th>Datum</th><th>Bar</th><th>TWINT</th><th>Tagesumsatz</th><th>Bruttolohn</th></tr></thead>
+          <tbody id="marketPayrollDailyRows"></tbody>
+        </table></div>
+
+        <h3>Manuelle Buchungen im Monat</h3>
+        <div class="table-wrap"><table class="report-table">
+          <thead><tr><th>Datum</th><th>Typ</th><th>Person</th><th>Bar</th><th>TWINT</th><th>Total</th><th>Produkt/Menge</th><th>Notiz</th><th></th></tr></thead>
+          <tbody id="manualSaleRows"></tbody>
+        </table></div>
+      </section>
+
+      <section class="card" id="productAdminCard" hidden>
+        <div class="row-head">
+          <div><h2>Produkte verwalten</h2><p class="muted admin-sub">Lege fest, welche bexio-Produkte im Bestell-Dropdown erscheinen.</p></div>
+          <button id="closeProductAdminBtn" class="secondary small" type="button">Schließen</button>
+        </div>
+        <div class="product-admin-toolbar">
+          <input id="productAdminSearch" placeholder="Produkt oder Produktcode suchen …" autocomplete="off">
+          <button id="enableVisibleBtn" class="secondary small" type="button">Sichtbare aktivieren</button>
+          <button id="disableVisibleBtn" class="secondary small" type="button">Sichtbare deaktivieren</button>
+        </div>
+        <div id="productAdminSummary" class="muted product-admin-summary"></div>
+        <div id="productAdminList" class="product-admin-list"></div>
+        <div class="product-admin-footer">
+          <button id="saveProductAdminBtn" type="button">Produktauswahl speichern</button>
+          <div id="productAdminMsg" class="msg"></div>
+        </div>
+      </section>
+
+      <section class="card" id="diagCard">
+        <h2>Status</h2>
+        <div id="statusText" class="muted">Lade …</div>
+      </section>
+    </section>
+  </main>
+  <script src="/app.js?v=1.18" defer></script>
+</body>
+</html>

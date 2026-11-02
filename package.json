@@ -1,0 +1,24 @@
+{
+  "name": "bexio-lieferportal",
+  "version": "1.12.0",
+  "private": true,
+  "description": "Internes Lieferportal fuer bexio: Kunden-/Produktauswahl, Sammelauftraege, Lieferscheine und Massendruck.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "NODE_ENV=development node server.js",
+    "check": "node --check server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "connect-pg-simple": "^10.0.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "express-session": "^1.18.1",
+    "helmet": "^8.0.0",
+    "pg": "^8.13.1"
+  }
+}
