@@ -98,3 +98,28 @@ CREATE INDEX IF NOT EXISTS idx_manual_sales_date ON manual_sales(sale_date DESC)
 ALTER TABLE manual_sales ADD COLUMN IF NOT EXISTS salesperson TEXT;
 ALTER TABLE manual_sales ADD COLUMN IF NOT EXISTS cash_chf NUMERIC(14,2);
 ALTER TABLE manual_sales ADD COLUMN IF NOT EXISTS twint_chf NUMERIC(14,2);
+
+
+-- v1.20 Mitarbeitende (Adressen für Lohnabrechnung)
+CREATE TABLE IF NOT EXISTS employees (
+  id BIGSERIAL PRIMARY KEY,
+  first_name TEXT NOT NULL,
+  last_name TEXT NOT NULL DEFAULT '',
+  street TEXT,
+  zip TEXT,
+  city TEXT,
+  ahv_number TEXT,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE manual_sales ADD COLUMN IF NOT EXISTS employee_id BIGINT REFERENCES employees(id);
+CREATE INDEX IF NOT EXISTS idx_manual_sales_employee ON manual_sales(employee_id, sale_date);
+
+-- Bisherige feste Personen einmalig übernehmen und bestehende Buchungen verknüpfen.
+INSERT INTO employees(first_name)
+  SELECT v.n FROM (VALUES ('Victoria'), ('Sali')) AS v(n)
+  WHERE NOT EXISTS (SELECT 1 FROM employees);
+UPDATE manual_sales m SET employee_id = e.id
+  FROM employees e
+  WHERE m.employee_id IS NULL AND m.category = 'Märit Bern' AND m.salesperson = e.first_name;

@@ -1,7 +1,7 @@
 'use strict';
 
 const $ = s => document.querySelector(s);
-const state = { csrf:'', catalog:null, selectedContact:null, drafts:[], user:null, adminProducts:[], draftKey:newDraftKey() };
+const state = { csrf:'', catalog:null, selectedContact:null, drafts:[], user:null, adminProducts:[], employees:[], draftKey:newDraftKey() };
 
 // Lokales Datum (Browser-Zeitzone) als 'YYYY-MM-DD'. toISOString() wäre UTC und liefert
 // in der Schweiz zwischen 00:00 und 01:00/02:00 Uhr noch den Vortag.
@@ -385,8 +385,65 @@ function openReporting(){
   if(!$('#manualSaleDate').value) $('#manualSaleDate').value=todayIso();
   populateManualSaleProducts();
   updateManualSaleFields();
+  $('#employeeAdmin').hidden = state.user?.role !== 'admin';
+  loadEmployees();
   loadReporting();
 }
+
+// ---------- Mitarbeitende ----------
+function empName(e){ return [e.first_name,e.last_name].filter(Boolean).join(' '); }
+async function loadEmployees(){
+  try{
+    state.employees=await api('/api/employees');
+    populateEmployeeSelect();
+    renderEmployees();
+  }catch(e){ msg($('#employeeMsg'),e.message,'error'); }
+}
+function populateEmployeeSelect(){
+  const sel=$('#manualSalePerson'); const current=sel.value;
+  const active=(state.employees||[]).filter(e=>e.active);
+  sel.innerHTML=active.length
+    ? active.map(e=>`<option value="${e.id}">${esc(empName(e))}</option>`).join('')
+    : '<option value="">Keine aktiven Personen – unten erfassen</option>';
+  if([...sel.options].some(o=>o.value===current)) sel.value=current;
+}
+function renderEmployees(){
+  const list=$('#employeeList'); if(!list) return;
+  const rows=state.employees||[];
+  list.innerHTML=rows.map(e=>{
+    const addr=[e.street,[e.zip,e.city].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+    const missing=!e.last_name||!e.street||!e.zip||!e.city;
+    return `<div class="employee-row ${e.active?'':'inactive'}"><div><strong>${esc(empName(e))}</strong>${e.active?'':' · inaktiv'}
+      <small>${addr?esc(addr):'Keine Adresse'}${e.ahv_number?` · AHV ${esc(e.ahv_number)}`:''}${missing?' · <span style="color:#a72c2c">Angaben für Lohnabrechnung unvollständig</span>':''}</small></div>
+      <button type="button" class="secondary small editEmployeeBtn" data-id="${e.id}">Bearbeiten</button></div>`;
+  }).join('') || '<p class="muted">Noch keine Personen erfasst.</p>';
+}
+function resetEmployeeForm(){
+  $('#employeeForm').reset(); $('#employeeId').value=''; $('#empActive').checked=true;
+  $('#empSaveBtn').textContent='Person hinzufügen'; $('#empCancelBtn').hidden=true;
+}
+$('#employeeList').addEventListener('click',(ev)=>{
+  const btn=ev.target.closest('.editEmployeeBtn'); if(!btn) return;
+  const e=(state.employees||[]).find(x=>String(x.id)===btn.dataset.id); if(!e) return;
+  $('#employeeId').value=e.id; $('#empFirst').value=e.first_name||''; $('#empLast').value=e.last_name||'';
+  $('#empStreet').value=e.street||''; $('#empZip').value=e.zip||''; $('#empCity').value=e.city||'';
+  $('#empAhv').value=e.ahv_number||''; $('#empActive').checked=!!e.active;
+  $('#empSaveBtn').textContent='Änderungen speichern'; $('#empCancelBtn').hidden=false;
+  msg($('#employeeMsg'),''); $('#empFirst').focus();
+});
+$('#empCancelBtn').addEventListener('click',()=>{resetEmployeeForm();msg($('#employeeMsg'),'')});
+$('#employeeForm').addEventListener('submit',async(ev)=>{
+  ev.preventDefault();
+  const btn=$('#empSaveBtn'); btn.disabled=true;
+  const id=$('#employeeId').value;
+  const body={first_name:$('#empFirst').value,last_name:$('#empLast').value,street:$('#empStreet').value,zip:$('#empZip').value,city:$('#empCity').value,ahv_number:$('#empAhv').value,active:$('#empActive').checked};
+  try{
+    await api(id?`/api/employees/${encodeURIComponent(id)}`:'/api/employees',{method:id?'PUT':'POST',body});
+    msg($('#employeeMsg'),id?'Änderungen gespeichert.':'Person hinzugefügt.','ok');
+    resetEmployeeForm(); await loadEmployees(); await loadReporting();
+  }catch(e){ msg($('#employeeMsg'),e.message,'error'); }
+  finally{ btn.disabled=false; }
+});
 function populateManualSaleProducts(){
   const sel=$('#manualSaleArticle');
   if(!sel || !state.catalog) return;
@@ -448,7 +505,7 @@ async function loadReporting(){
         <div><span>AHV/IV/EO 5.30%</span><strong>− ${chf(p.ahv_iv_eo)}</strong></div>
         <div><span>ALV 1.10%</span><strong>− ${chf(p.alv)}</strong></div>
         <div class="net"><span>Nettolohn</span><strong>${chf(p.net_wage)}</strong></div>
-        <button type="button" class="secondary small payrollSlipBtn" data-person="${esc(p.salesperson)}" data-month="${esc(r.month||month)}">Lohnabrechnung erstellen</button>
+        <button type="button" class="secondary small payrollSlipBtn" data-employee="${esc(p.employee_id||'')}" data-month="${esc(r.month||month)}">Lohnabrechnung erstellen</button>
       </div>`).join('') || '<div class="muted">Noch keine Märit-Bern-Lohnbuchungen in diesem Monat.</div>';
 
     $('#marketPayrollDailyRows').innerHTML=(r.market_payroll||[]).flatMap(p=>
@@ -478,7 +535,8 @@ async function loadReporting(){
 
 $('#marketPayrollCards').addEventListener('click',(e)=>{
   const btn=e.target.closest('.payrollSlipBtn'); if(!btn)return;
-  const q=new URLSearchParams({month:btn.dataset.month,person:btn.dataset.person});
+  if(!btn.dataset.employee) return alert('Diese Buchungen sind keiner erfassten Person zugeordnet.');
+  const q=new URLSearchParams({month:btn.dataset.month,employee:btn.dataset.employee});
   window.open(`/payroll-slip?${q}`,'_blank','noopener');
 });
 
@@ -499,7 +557,7 @@ $('#saveManualSaleBtn').addEventListener('click',async()=>{
       sale_date:$('#manualSaleDate').value,
       category:$('#manualSaleCategory').value,
       amount_chf:isBern ? null : Number($('#manualSaleAmount').value),
-      salesperson:isBern ? $('#manualSalePerson').value : null,
+      employee_id:isBern ? Number($('#manualSalePerson').value)||null : null,
       cash_chf:isBern ? Number($('#manualSaleCash').value||0) : null,
       twint_chf:isBern ? Number($('#manualSaleTwint').value||0) : null,
       article_id:(!isBern && $('#manualSaleArticle').value)?Number($('#manualSaleArticle').value):null,
