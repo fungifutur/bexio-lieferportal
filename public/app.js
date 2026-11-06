@@ -1,7 +1,28 @@
 'use strict';
 
 const $ = s => document.querySelector(s);
-const state = { csrf:'', catalog:null, selectedContact:null, drafts:[], user:null, adminProducts:[] };
+const state = { csrf:'', catalog:null, selectedContact:null, drafts:[], user:null, adminProducts:[], draftKey:newDraftKey() };
+
+// Lokales Datum (Browser-Zeitzone) als 'YYYY-MM-DD'. toISOString() wäre UTC und liefert
+// in der Schweiz zwischen 00:00 und 01:00/02:00 Uhr noch den Vortag.
+function localIsoDate(d=new Date()){
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+// 'YYYY-MM-DD' (oder ISO-Zeitstempel) als Schweizer Datum anzeigen, ohne Zeitzonen-Verschiebung.
+function displayDate(v){
+  const s=String(v||'').slice(0,10);
+  const d=new Date(`${s}T12:00:00`);
+  return Number.isNaN(d.getTime())?s:d.toLocaleDateString('de-CH');
+}
+// Eindeutiger Schlüssel pro erfasster Bestellung (Schutz gegen Doppelklick/Doppelsenden).
+function newDraftKey(){
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  if (!window.crypto?.getRandomValues) return '';
+  const b=window.crypto.getRandomValues(new Uint8Array(16));
+  b[6]=(b[6]&0x0f)|0x40; b[8]=(b[8]&0x3f)|0x80;
+  const h=[...b].map(x=>x.toString(16).padStart(2,'0')).join('');
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
 
 async function api(url, options={}) {
   const headers = { ...(options.headers || {}) };
@@ -32,7 +53,7 @@ async function boot(){
   $('#setupCard').hidden = true; $('#loginCard').hidden = true; $('#app').hidden = false;
   $('#modeBadge').textContent = s.dryRun ? 'TESTMODUS – keine bexio-Schreibzugriffe' : 'PRODUKTIV';
   $('#modeBadge').className = `badge ${s.dryRun?'warn':''}`;
-  $('#deliveryDate').value = new Date().toISOString().slice(0,10);
+  $('#deliveryDate').value = localIsoDate();
   await loadStatus();
   await loadDrafts();
 }
@@ -219,15 +240,21 @@ function addItemRow(){
 }
 
 $('#saveDraftBtn').addEventListener('click',async()=>{
+  const btn=$('#saveDraftBtn');
+  if(btn.disabled) return;
   msg($('#draftMsg'),'');
+  btn.disabled=true;
   try{
     if(!state.selectedContact) throw new Error('Bitte einen Kunden auswählen.');
     const items=[...document.querySelectorAll('.item-row')].map(r=>({article_id:Number(r.querySelector('.article').value),quantity:Number(r.querySelector('.quantity').value)})).filter(x=>x.article_id&&x.quantity>0);
     if(!items.length) throw new Error('Bitte mindestens ein Produkt und eine Menge eingeben.');
-    await api('/api/drafts',{method:'POST',body:{contact_id:state.selectedContact.id,contact_name:state.selectedContact.name,delivery_date:$('#deliveryDate').value,items}});
-    msg($('#draftMsg'),'Bestellung zur Warteliste hinzugefügt.','ok');
+    msg($('#draftMsg'),'Bestellung wird gespeichert …');
+    const r=await api('/api/drafts',{method:'POST',body:{contact_id:state.selectedContact.id,contact_name:state.selectedContact.name,delivery_date:$('#deliveryDate').value,items,client_key:state.draftKey}});
+    msg($('#draftMsg'),r?.duplicate?'Diese Bestellung war bereits gespeichert (kein Duplikat angelegt).':'Bestellung zur Warteliste hinzugefügt.','ok');
+    state.draftKey=newDraftKey();
     state.selectedContact=null; $('#selectedContact').hidden=true; $('#items').innerHTML=''; addItemRow(); await loadDrafts();
   }catch(e){msg($('#draftMsg'),e.message,'error')}
+  finally{btn.disabled=false}
 });
 
 async function loadDrafts(){
@@ -239,7 +266,7 @@ function renderDrafts(){
   if(!state.drafts.length){box.innerHTML='<p class="muted">Noch keine Bestellungen.</p>';return}
   box.innerHTML=state.drafts.map(d=>`<div class="draft">
     <div class="selectline"><input type="checkbox" class="draftCheck" data-id="${d.id}" ${['draft','failed','created'].includes(d.status)?'':'disabled'}>
-      <div style="flex:1"><div class="draft-top"><div><div class="draft-title">${esc(d.contact_name)}</div><div class="draft-meta">${new Date(d.delivery_date).toLocaleDateString('de-CH')} ${d.bexio_delivery_nr?`· ${esc(d.bexio_delivery_nr)}`:''}</div></div><span class="status ${esc(d.status)}">${statusLabel(d.status)}</span></div>
+      <div style="flex:1"><div class="draft-top"><div><div class="draft-title">${esc(d.contact_name)}</div><div class="draft-meta">${esc(displayDate(d.delivery_date))} ${d.bexio_delivery_nr?`· ${esc(d.bexio_delivery_nr)}`:''}</div></div><span class="status ${esc(d.status)}">${statusLabel(d.status)}</span></div>
       <ul class="draft-items">${d.items.map(i=>`<li>${esc(i.article_name)} · ${qty(i.quantity)}</li>`).join('')}</ul>
       ${d.error_message?`<div class="draft-error">${esc(d.error_message)}</div>`:''}
       <div class="draft-actions">
@@ -347,8 +374,8 @@ boot().catch(e=>{console.error(e);showLogin()});
 
 
 // ---------- Monatsauswertung / manuelle Umsätze ----------
-function todayIso(){ return new Date().toISOString().slice(0,10); }
-function monthIso(){ return new Date().toISOString().slice(0,7); }
+function todayIso(){ return localIsoDate(); }
+function monthIso(){ return localIsoDate().slice(0,7); }
 function chf(v){ return new Intl.NumberFormat('de-CH',{style:'currency',currency:'CHF'}).format(Number(v||0)); }
 
 function openReporting(){
@@ -425,7 +452,7 @@ async function loadReporting(){
     $('#marketPayrollDailyRows').innerHTML=(r.market_payroll||[]).flatMap(p=>
       (p.daily||[]).map(d=>`<tr>
         <td><strong>${esc(p.salesperson)}</strong></td>
-        <td>${new Date(String(d.sale_date).slice(0,10)+'T12:00:00').toLocaleDateString('de-CH')}</td>
+        <td>${esc(displayDate(d.sale_date))}</td>
         <td>${chf(d.cash)}</td>
         <td>${chf(d.twint)}</td>
         <td><strong>${chf(d.revenue)}</strong></td>
@@ -434,7 +461,7 @@ async function loadReporting(){
     ).join('') || '<tr><td colspan="6" class="muted">Keine Märit-Bern-Tage in diesem Monat.</td></tr>';
 
     $('#manualSaleRows').innerHTML=(r.manual_sales||[]).map(m=>`<tr>
-      <td>${new Date(String(m.sale_date).slice(0,10)+'T12:00:00').toLocaleDateString('de-CH')}</td>
+      <td>${esc(displayDate(m.sale_date))}</td>
       <td>${esc(m.category)}</td>
       <td>${esc(m.salesperson||'–')}</td>
       <td>${m.category==='Märit Bern'?chf(m.cash_chf):'–'}</td>

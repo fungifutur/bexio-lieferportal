@@ -7,9 +7,17 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 const fs = require('fs/promises');
 const path = require('path');
+
+// DATE-Spalten als Text 'YYYY-MM-DD' lesen statt als JS-Date. Ein JS-Date wird je nach
+// Server-Zeitzone um einen Tag verschoben (z. B. TZ=Europe/Zurich: 06.11. -> 2026-11-05T23:00Z)
+// und String(date).slice(0,10) ergibt 'Fri Nov 06' statt eines ISO-Datums.
+types.setTypeParser(1082, v => v);
+
+// Unerwartete Promise-Fehler protokollieren, statt den ganzen Prozess zu beenden.
+process.on('unhandledRejection', err => console.error('Unbehandelter Fehler:', err));
 
 const PORT = Number(process.env.PORT || 3000);
 const DATABASE_URL = process.env.DATABASE_URL || '';
@@ -45,6 +53,28 @@ const pool = new Pool({
 });
 
 const app = express();
+
+// Express 4 leitet Fehler aus async-Handlern nicht an die Fehlerbehandlung weiter.
+// Ohne diesen Wrapper führt z. B. ein kurzer bexio-Ausfall beim Erfassen einer
+// Bestellung zu einem unbehandelten Fehler. Alle Routen-Handler werden deshalb
+// so gekapselt, dass Fehler als HTTP 500 beantwortet werden.
+function wrapAsync(fn) {
+  if (typeof fn !== 'function' || fn.length === 4) return fn;
+  return function wrapped(req, res, next) {
+    try {
+      const result = fn(req, res, next);
+      if (result && typeof result.catch === 'function') result.catch(next);
+    } catch (err) { next(err); }
+  };
+}
+for (const method of ['get', 'post', 'put', 'patch', 'delete']) {
+  const original = app[method].bind(app);
+  app[method] = (route, ...handlers) => {
+    if (method === 'get' && handlers.length === 0) return original(route); // app.get('setting')
+    return original(route, ...handlers.map(wrapAsync));
+  };
+}
+
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(helmet({
@@ -90,6 +120,27 @@ function safeNumber(v) {
   return Number.isFinite(n) ? n : null;
 }
 function normalizePassword(v) { return String(v || '').normalize('NFC'); }
+// Heutiges Datum in Schweizer Zeit als 'YYYY-MM-DD' (unabhängig von der Server-Zeitzone).
+function zurichToday() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Zurich', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+// Bestellungen, die länger als STALE_PROCESSING_MINUTES im Status 'processing' stehen,
+// wurden unterbrochen (Neustart, Deploy, Absturz). Sie werden auf 'failed' gesetzt und
+// können danach normal erneut verarbeitet werden. Bereits gespeicherte bexio-IDs bleiben
+// erhalten, ein Retry setzt also beim letzten erfolgreichen Schritt fort.
+const STALE_PROCESSING_MINUTES = 10;
+async function releaseStaleProcessing(db = pool) {
+  await db.query(
+    `UPDATE draft_orders
+     SET status='failed',
+         error_message='Verarbeitung wurde unterbrochen (z. B. Server-Neustart). Bitte erneut erstellen – bereits angelegte bexio-Schritte werden nicht doppelt ausgeführt.',
+         updated_at=now()
+     WHERE status='processing' AND updated_at < now() - ($1 || ' minutes')::interval`,
+    [String(STALE_PROCESSING_MINUTES)]
+  );
+}
 
 
 
@@ -459,6 +510,8 @@ async function createArticlePosition(orderId, article, qty) {
 }
 
 async function processDraft(req, draftId) {
+  if (!UUID_RE.test(String(draftId))) throw new Error('Ungültige Bestellungs-ID.');
+  await releaseStaleProcessing();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -466,9 +519,18 @@ async function processDraft(req, draftId) {
     if (!lock.rowCount) throw new Error('Bestellung nicht gefunden.');
     const draft = lock.rows[0];
     if (draft.status === 'created') { await client.query('COMMIT'); return draft; }
-    if (!['draft','failed'].includes(draft.status)) throw new Error(`Bestellung ist im Status ${draft.status}.`);
+    if (!['draft','failed'].includes(draft.status)) {
+      throw new Error(draft.status === 'processing'
+        ? 'Bestellung wird gerade verarbeitet. Bitte kurz warten und die Liste aktualisieren.'
+        : `Bestellung ist im Status ${draft.status}.`);
+    }
     await client.query("UPDATE draft_orders SET status='processing',error_message=NULL,updated_at=now() WHERE id=$1", [draftId]);
     await client.query('COMMIT');
+  } catch (err) {
+    // Offene Transaktion immer beenden, sonst geht die Verbindung mit gehaltener
+    // Zeilensperre zurück in den Pool.
+    try { await client.query('ROLLBACK'); } catch {}
+    throw err;
   } finally { client.release(); }
 
   try {
@@ -733,7 +795,7 @@ app.post('/api/setup', authLimiter, async (req, res) => {
       if (err) return res.status(500).json({ error: 'Admin wurde erstellt, Anmeldung aber nicht gestartet. Bitte normal anmelden.' });
       req.session.user = created.rows[0];
       const csrf = issueCsrf(req);
-      await audit(req, 'setup.admin_created', 'user', created.rows[0].id);
+      await audit(req, 'setup.admin_created', 'user', created.rows[0].id); // audit() fängt eigene Fehler ab
       res.status(201).json({ ok: true, user: req.session.user, csrf });
     });
   } catch (e) {
@@ -761,7 +823,8 @@ app.post('/api/login', authLimiter, async (req, res) => {
     if (err) return res.status(500).json({ error: 'Session konnte nicht erstellt werden.' });
     req.session.user = user;
     const csrf = issueCsrf(req);
-    await pool.query('UPDATE app_users SET last_login_at=now() WHERE id=$1', [user.id]);
+    try { await pool.query('UPDATE app_users SET last_login_at=now() WHERE id=$1', [user.id]); }
+    catch (e) { console.error('last_login_at konnte nicht gespeichert werden:', e.message); }
     await audit(req, 'login.success', 'user', user.id);
     res.json({ ok: true, user: req.session.user, csrf });
   });
@@ -898,6 +961,7 @@ app.post('/api/admin/products', requireLogin, requireAdmin, requireCsrf, async (
 });
 
 app.get('/api/drafts', requireLogin, async (req, res) => {
+  await releaseStaleProcessing();
   const r = await pool.query(`
     SELECT d.*, COALESCE(json_agg(json_build_object('id',i.id,'article_id',i.article_id,'article_name',i.article_name,'quantity',i.quantity,'unit_name',i.unit_name,'unit_price',i.unit_price) ORDER BY i.id)
       FILTER (WHERE i.id IS NOT NULL), '[]') AS items
@@ -910,13 +974,23 @@ app.get('/api/drafts', requireLogin, async (req, res) => {
 
 app.post('/api/drafts', requireLogin, requireCsrf, async (req, res) => {
   const contactId = safeNumber(req.body?.contact_id);
-  const contactName = String(req.body?.contact_name || '').trim().slice(0,250);
-  const deliveryDate = String(req.body?.delivery_date || new Date().toISOString().slice(0,10));
+  const deliveryDate = String(req.body?.delivery_date || zurichToday());
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
-  if (!contactId || !contactName || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) return res.status(422).json({ error: 'Kunde oder Lieferdatum ungültig.' });
+  // Vom Browser pro Erfassung erzeugter Schlüssel: ein Doppelklick oder eine wiederholte
+  // Anfrage mit demselben Schlüssel legt keine zweite Bestellung an.
+  const clientKey = UUID_RE.test(String(req.body?.client_key || '')) ? String(req.body.client_key).toLowerCase() : null;
+  if (!contactId || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) return res.status(422).json({ error: 'Kunde oder Lieferdatum ungültig.' });
   if (!items.length || items.length > 100) return res.status(422).json({ error: 'Mindestens eine und höchstens 100 Positionen.' });
+  if (clientKey) {
+    const idemExisting = crypto.createHash('sha256').update(`client:${clientKey}`).digest('hex');
+    const dup = await pool.query('SELECT id FROM draft_orders WHERE idempotency_key=$1', [idemExisting]);
+    if (dup.rowCount) return res.status(200).json({ id: dup.rows[0].id, duplicate: true });
+  }
   const cat = await catalog();
-  if (!cat.contacts.some(c => Number(c.id) === Number(contactId))) return res.status(422).json({ error: 'Dieser Kunde gehört nicht zu einer freigegebenen Kundengruppe.' });
+  const contact = cat.contacts.find(c => Number(c.id) === Number(contactId));
+  if (!contact) return res.status(422).json({ error: 'Dieser Kunde gehört nicht zu einer freigegebenen Kundengruppe.' });
+  // Name aus bexio übernehmen, nicht aus dem Browser.
+  const contactName = String(contact.name || req.body?.contact_name || '').trim().slice(0,250) || `Kontakt ${contactId}`;
   const amap = new Map(cat.articles.map(a => [Number(a.id), a]));
   const clean = [];
   for (const item of items) {
@@ -926,11 +1000,23 @@ app.post('/api/drafts', requireLogin, requireCsrf, async (req, res) => {
     clean.push({ article, qty });
   }
   const id = uuid();
-  const idem = crypto.createHash('sha256').update(`${id}:${contactId}:${deliveryDate}`).digest('hex');
+  const idem = clientKey
+    ? crypto.createHash('sha256').update(`client:${clientKey}`).digest('hex')
+    : crypto.createHash('sha256').update(`${id}:${contactId}:${deliveryDate}`).digest('hex');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('INSERT INTO draft_orders(id,contact_id,contact_name,delivery_date,idempotency_key,created_by) VALUES($1,$2,$3,$4,$5,$6)', [id, contactId, contactName, deliveryDate, idem, req.session.user.id]);
+    const inserted = await client.query(
+      `INSERT INTO draft_orders(id,contact_id,contact_name,delivery_date,idempotency_key,created_by)
+       VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
+      [id, contactId, contactName, deliveryDate, idem, req.session.user.id]
+    );
+    if (!inserted.rowCount) {
+      // Parallel eingetroffene Doppelanfrage: bestehende Bestellung zurückgeben.
+      await client.query('ROLLBACK');
+      const existing = await pool.query('SELECT id FROM draft_orders WHERE idempotency_key=$1', [idem]);
+      return res.status(200).json({ id: existing.rows[0]?.id, duplicate: true });
+    }
     for (const { article, qty } of clean) {
       await client.query(
         'INSERT INTO draft_order_items(draft_order_id,article_id,article_name,quantity,unit_name,unit_price) VALUES($1,$2,$3,$4,$5,$6)',
@@ -983,7 +1069,7 @@ app.post('/api/drafts/process-all', requireLogin, requireCsrf, async (req, res) 
 
 
 function monthRange(rawMonth) {
-  const month = /^\d{4}-\d{2}$/.test(String(rawMonth || '')) ? String(rawMonth) : new Date().toISOString().slice(0,7);
+  const month = /^\d{4}-\d{2}$/.test(String(rawMonth || '')) ? String(rawMonth) : zurichToday().slice(0,7);
   const [y, m] = month.split('-').map(Number);
   if (!y || m < 1 || m > 12) throw new Error('Ungültiger Monat.');
   const start = `${month}-01`;
@@ -1380,7 +1466,14 @@ function escapeHtml(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'
 function formatQty(q) { const n = Number(q); return Number.isFinite(n) ? n.toLocaleString('de-CH', { maximumFractionDigits: 6 }) : String(q); }
 
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: 0, etag: true }));
-app.use((err, req, res, next) => { console.error(err); res.status(500).json({ error: 'Interner Fehler.' }); });
+app.use((err, req, res, next) => {
+  console.error('Fehler in', req.method, req.path, err);
+  if (res.headersSent) return next(err);
+  // Angemeldete Benutzer sehen die Ursache (z. B. „bexio GET /2.0/contact: 503 …“),
+  // nicht angemeldete nur eine allgemeine Meldung.
+  const message = req.session?.user?.id && err?.message ? String(err.message).slice(0, 500) : 'Interner Fehler.';
+  res.status(500).json({ error: message });
+});
 
 initDb().then(() => {
   app.listen(PORT, () => console.log(`bexio Lieferportal auf Port ${PORT} · dryRun=${DRY_RUN}`));

@@ -234,3 +234,33 @@ Die Produktauswahl hat jetzt eine echte Suchfunktion über mehrere Zeichen und b
 
 ## v1.18
 Das zusätzliche Produktsuchfeld aus v1.17 wurde wieder entfernt. Die Produktauswahl erfolgt wieder direkt über das Dropdown. Die Positionen von `+ Produkt` und `Bestellung hinzufügen` bleiben wie gewünscht.
+
+## v1.19 Stabilität und Backups
+
+- **Kein Doppelklick-Duplikat mehr:** „Bestellung hinzufügen“ ist während des Speicherns gesperrt. Zusätzlich sendet der Browser pro Erfassung einen eindeutigen Schlüssel; dieselbe Anfrage legt serverseitig nie eine zweite Bestellung an.
+- **Kein Absturz bei Fehlern:** Fehler in Server-Routen (z. B. kurzer bexio-Ausfall beim Erfassen) werden als Fehlermeldung beantwortet statt den Prozess zu beenden.
+- **Hängende Verarbeitung löst sich selbst:** Bestellungen, die länger als 10 Minuten „in Bearbeitung“ stehen (Neustart/Deploy während der Verarbeitung), werden auf „Fehler“ gesetzt und können erneut erstellt werden. Bereits angelegte bexio-Schritte werden dabei nicht doppelt ausgeführt.
+- **Datum korrekt:** Lieferdatum und Monat werden in Schweizer Zeit vorgeschlagen (vorher zwischen 00:00 und 01:00/02:00 Uhr der Vortag). Datumsfelder aus PostgreSQL werden unabhängig von der Server-Zeitzone verarbeitet. Die Lohntabelle Märit Bern zeigt wieder echte Daten statt „Invalid Date“ und ist chronologisch sortiert.
+- Der Kundenname einer Bestellung wird aus bexio übernommen, nicht aus dem Browser.
+- `render.yaml` entspricht den gebuchten Instanzen (Web `0.5c-512mb`, DB `0.1c-256mb`).
+
+## Tägliches Backup nach Google Drive
+
+Render sichert die bezahlte Datenbank nur 3 Tage zurück (Point-in-Time-Recovery). Zusätzlich läuft jede Nacht `.github/workflows/db-backup.yml` (gleiches Verfahren wie bei der Pilzverwaltung): `pg_dump` → AES-256-verschlüsselt → Google Drive-Ordner `Lieferportal-Backups`, 30 Tage Aufbewahrung.
+
+Einrichtung im GitHub-Repo unter **Settings → Secrets and variables → Actions**:
+
+| Secret | Wert |
+|---|---|
+| `BACKUP_DATABASE_URL` | Render → Lieferportal-Datenbank → **External Database URL** |
+| `BACKUP_PASSPHRASE` | langes zufälliges Passwort (im Passwortmanager ablegen) |
+| `GDRIVE_RCLONE_TOKEN` | derselbe rclone-Token wie bei der Pilzverwaltung |
+
+Optional als **Variable**: `PG_MAJOR` (Postgres-Version der Render-DB, Standard 16), `BACKUP_KEEP_DAYS`.
+
+Danach unter **Actions → DB-Backup nach Google Drive → Run workflow** einmal manuell starten und prüfen, ob die Datei in Google Drive erscheint.
+
+Hinweise:
+- Die gespeicherte bexio-Verbindung ist im Backup mit `APP_ENCRYPTION_KEY` verschlüsselt. Diesen Wert ebenfalls im Passwortmanager ablegen; ohne ihn muss nach einer Wiederherstellung nur bexio neu verbunden werden.
+- Bei öffentlichen Repos deaktiviert GitHub zeitgesteuerte Workflows nach 60 Tagen ohne Aktivität im Repo (GitHub schickt vorher eine E-Mail). Repo privat stellen oder den Workflow bei Bedarf wieder aktivieren.
+- Wiederherstellung testen: `gpg --decrypt DATEI.dump.gpg | pg_restore --no-owner --clean --if-exists -d "<URL einer LEEREN Test-Datenbank>"`

@@ -1,8 +1,11 @@
+# Entspricht den tatsächlich gebuchten Instanzen (Stand 11/2026).
+# Wichtig: Nicht auf "free" zurückstellen. Eine Free-Datenbank läuft nach 30 Tagen ab
+# und hat keine Backups; ein Blueprint-Sync mit "free" würde die Instanzen herabstufen.
 services:
   - type: web
     name: bexio-lieferportal
     runtime: node
-    plan: free
+    plan: 0.5c-512mb        # $7/Monat, 0.5 CPU, 512 MB RAM
     buildCommand: npm install --omit=dev
     startCommand: npm start
     healthCheckPath: /health
@@ -20,4 +23,4 @@ services:
 
 databases:
   - name: bexio-lieferportal-db
-    plan: free
+    plan: 0.1c-256mb        # $6/Monat, 0.1 CPU, 256 MB RAM, inkl. Point-in-Time-Recovery (3 Tage)
