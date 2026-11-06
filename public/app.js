@@ -445,7 +445,8 @@ async function loadReporting(){
         <div><span>Arbeitstage</span><strong>${Number(p.days||0)}</strong></div>
         <div><span>Märit-Umsatz</span><strong>${chf(p.revenue)}</strong></div>
         <div><span>Bruttolohn</span><strong>${chf(p.gross_wage)}</strong></div>
-        <div><span>Abzug 6.4%</span><strong>− ${chf(p.deduction_64)}</strong></div>
+        <div><span>AHV/IV/EO 5.30%</span><strong>− ${chf(p.ahv_iv_eo)}</strong></div>
+        <div><span>ALV 1.10%</span><strong>− ${chf(p.alv)}</strong></div>
         <div class="net"><span>Nettolohn</span><strong>${chf(p.net_wage)}</strong></div>
         <button type="button" class="secondary small payrollSlipBtn" data-person="${esc(p.salesperson)}" data-month="${esc(r.month||month)}">Lohnabrechnung erstellen</button>
       </div>`).join('') || '<div class="muted">Noch keine Märit-Bern-Lohnbuchungen in diesem Monat.</div>';

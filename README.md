@@ -267,6 +267,6 @@ Hinweise:
 
 ## v1.20 Lohnabrechnung Märit Bern
 
-In der Monatsauswertung hat jede Person (Victoria, Sali) unter „Lohn Märit Bern“ den Button **Lohnabrechnung erstellen**. Er öffnet eine A4-Lohnabrechnung für den gewählten Monat mit allen Verkaufstagen (Bar, TWINT, Tagesumsatz, Grundlohn, 30 % über CHF 600, Tageslohn), Bruttolohn, Abzug 6.4 % und Nettolohn sowie Unterschriftsfeldern. Der Druckdialog öffnet sich automatisch; als Drucker **„Als PDF speichern“** wählen.
+In der Monatsauswertung hat jede Person (Victoria, Sali) unter „Lohn Märit Bern“ den Button **Lohnabrechnung erstellen**. Er öffnet eine A4-Lohnabrechnung für den gewählten Monat mit allen Verkaufstagen (Bar, TWINT, Tagesumsatz, Grundlohn, 30 % über CHF 600, Tageslohn), Bruttolohn, Abzügen aufgeschlüsselt nach AHV/IV/EO 5.30 %, ALV 1.10 % und BVG (variabel, aktuell 0.00), Nettolohn sowie Unterschriftsfeldern. Jeder Abzug wird einzeln auf Rappen gerundet; „Total Abzüge“ ist ihre Summe. Passt bis ca. 10 Verkaufstage auf eine A4-Seite, bei mehr Tagen läuft sie auf eine zweite Seite weiter. Der Druckdialog öffnet sich automatisch; als Drucker **„Als PDF speichern“** wählen.
 
 Tageslöhne werden jetzt pro Tag auf Rappen gerundet und dann summiert, damit die Summe der Tageslöhne auf der Abrechnung exakt dem Bruttolohn entspricht (Unterschied zu vorher höchstens 1 Rappen).

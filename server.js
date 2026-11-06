@@ -1068,6 +1068,9 @@ app.post('/api/drafts/process-all', requireLogin, requireCsrf, async (req, res) 
 });
 
 
+// Arbeitnehmer-Beitragssätze Sozialversicherungen (Total 6.4 %).
+const PAYROLL_RATES = { ahv_iv_eo: 0.053, alv: 0.011 };
+
 // Märit-Bern-Lohn aus manuellen Buchungen berechnen (für Auswertung und Lohnabrechnung).
 function computeMarketPayroll(manualRows) {
   // Märit Bern: Lohn pro Person und Verkaufstag.
@@ -1108,13 +1111,20 @@ function computeMarketPayroll(manualRows) {
 
   return [...payrollMap.values()].map(p => {
     // Erst auf Rappen runden, dann abziehen: so ergibt Brutto − Abzug exakt Netto.
+    // Jeder Abzug wird einzeln auf Rappen gerundet; Total = Summe der Einzelabzüge.
     const gross = Number(p.gross_wage.toFixed(2));
-    const deduction = Number((gross * 0.064).toFixed(2));
+    const ahv = Number((gross * PAYROLL_RATES.ahv_iv_eo).toFixed(2));
+    const alv = Number((gross * PAYROLL_RATES.alv).toFixed(2));
+    const bvg = 0; // BVG: variabel, auf koordiniertem Lohn – bei diesen Löhnen kein Abzug
+    const deduction = Number((ahv + alv + bvg).toFixed(2));
     return {
       salesperson:p.salesperson,
       days:p.days,
       revenue:Number(p.revenue.toFixed(2)),
       gross_wage:gross,
+      ahv_iv_eo:ahv,
+      alv,
+      bvg,
       deduction_64:deduction,
       net_wage:Number((gross - deduction).toFixed(2)),
       daily:p.daily.sort((a,b)=>a.sale_date.localeCompare(b.sale_date))
@@ -1376,25 +1386,27 @@ app.get('/payroll-slip', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.type('html').send(`<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Lohnabrechnung ${escapeHtml(person)} ${escapeHtml(month)}</title><style>
-@page{size:A4;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0}
+@page{size:A4;margin:16mm 18mm 14mm 22mm}*{box-sizing:border-box}html,body{margin:0;padding:0}
 body{font-family:Arial,Helvetica,sans-serif;color:#111;background:#fff;font-size:11.5px;line-height:1.4}
-.sheet{position:relative;width:210mm;min-height:297mm;padding:20mm 18mm 16mm 22mm}
+.sheet{position:relative}
 .head{display:flex;justify-content:space-between;align-items:flex-start}
 .sender{font-size:10.5px;line-height:1.5}.sender strong{font-size:12.5px;display:block;margin-bottom:.8mm}
-.recipient{margin-top:22mm;margin-left:83mm;font-size:12px}.recipient strong{font-size:15px}
-h1{font-size:24px;margin:16mm 0 2mm}.sub{color:#555;margin-bottom:8mm}
+.recipient{margin-top:4mm;margin-left:83mm;font-size:12px}.recipient strong{font-size:15px}
+h1{font-size:24px;margin:9mm 0 1mm}.sub{color:#555;margin-bottom:5mm}
 .meta{display:grid;grid-template-columns:repeat(3,1fr);gap:6mm;margin-bottom:8mm}.meta div{border-bottom:1px solid #aaa;padding-bottom:2mm}
 .meta span{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#666;margin-bottom:1mm}.meta strong{font-size:13px}
-h2{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#444;margin:8mm 0 2mm}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#444;margin:6mm 0 2mm}
 table{width:100%;border-collapse:collapse}th{font-size:9px;text-transform:uppercase;letter-spacing:.4px;color:#555;text-align:left;border-bottom:1.5px solid #222;padding:2mm 1.5mm}
-td{padding:2.2mm 1.5mm;border-bottom:1px solid #ddd}.num{text-align:right}.strong{font-weight:700}
+td{padding:1.4mm 1.5mm;border-bottom:1px solid #ddd}.num{text-align:right}.strong{font-weight:700}
 tfoot td{border-top:1.5px solid #222;border-bottom:none;font-weight:700}
-.summary{width:95mm;margin-left:auto;margin-top:8mm}.summary td{border-bottom:1px solid #ddd}
-.summary .net td{font-size:14px;font-weight:800;border-top:2px solid #111;border-bottom:2px solid #111}
-.rule{font-size:9.5px;color:#555;margin-top:8mm;line-height:1.5}
-.sign{display:grid;grid-template-columns:1fr 1fr;gap:20mm;margin-top:22mm}.sign div{border-top:1px solid #111;padding-top:1.5mm;font-size:9.5px;color:#444}
-footer{position:absolute;left:22mm;right:18mm;bottom:12mm;border-top:1px solid #ddd;padding-top:2mm;color:#777;font-size:9px}
-@media screen{body{background:#ececec;padding:12px}.sheet{margin:0 auto;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.14)}}
+.deductions .basis{font-style:italic;color:#555;font-size:10px}.deductions .grossrow td{font-weight:700}
+.deductions .totalrow td{font-weight:700;border-top:1.5px solid #222}
+.deductions .net td{font-size:14px;font-weight:800;border-top:2px solid #111;border-bottom:2px solid #111}
+.rule{font-size:9.5px;color:#555;margin-top:5mm;line-height:1.5}
+.sign{display:grid;grid-template-columns:1fr 1fr;gap:20mm;margin-top:11mm}.sign div{border-top:1px solid #111;padding-top:1.5mm;font-size:9.5px;color:#444}
+footer{margin-top:5mm;border-top:1px solid #ddd;padding-top:2mm;color:#777;font-size:9px}
+@media screen{body{background:#ececec;padding:12px}.sheet{width:210mm;min-height:297mm;padding:16mm 18mm 14mm 22mm;margin:0 auto;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.14)}}
+tr,.deductions,.sign{break-inside:avoid}
 </style></head><body><section class="sheet">
 <div class="head"><div class="sender"><strong>fungi futuri GmbH</strong>Erlenstrasse 43<br>3612 Steffisburg</div></div>
 <div class="recipient"><strong>${escapeHtml(person)}</strong></div>
@@ -1408,12 +1420,16 @@ footer{position:absolute;left:22mm;right:18mm;bottom:12mm;border-top:1px solid #
 <table><thead><tr><th>Datum</th><th class="num">Bar</th><th class="num">TWINT</th><th class="num">Tagesumsatz</th><th class="num">Grundlohn</th><th class="num">30 % über 600</th><th class="num">Tageslohn</th></tr></thead>
 <tbody>${rows}</tbody>
 <tfoot><tr><td>Total</td><td class="num">${chf(p.daily.reduce((a,d)=>a+d.cash,0))}</td><td class="num">${chf(p.daily.reduce((a,d)=>a+d.twint,0))}</td><td class="num">${chf(p.revenue)}</td><td></td><td></td><td class="num">${chf(p.gross_wage)}</td></tr></tfoot></table>
-<table class="summary"><tbody>
-<tr><td>Bruttolohn</td><td class="num">CHF ${chf(p.gross_wage)}</td></tr>
-<tr><td>Abzug 6.4 %</td><td class="num">− CHF ${chf(p.deduction_64)}</td></tr>
-<tr class="net"><td>Nettolohn / Auszahlung</td><td class="num">CHF ${chf(p.net_wage)}</td></tr>
+<h2>Lohn und Abzüge</h2>
+<table class="deductions"><thead><tr><th>Position</th><th class="num">Satz</th><th class="num">Basis</th><th class="num">Betrag CHF</th></tr></thead><tbody>
+<tr class="grossrow"><td>Bruttolohn</td><td></td><td></td><td class="num">${chf(p.gross_wage)}</td></tr>
+<tr><td>AHV/IV/EO</td><td class="num">5.30 %</td><td class="num basis">AHV-pfl. Lohn ${chf(p.gross_wage)}</td><td class="num">− ${chf(p.ahv_iv_eo)}</td></tr>
+<tr><td>ALV (bis CHF 148'200/J)</td><td class="num">1.10 %</td><td class="num basis">AHV-pfl. Lohn ${chf(p.gross_wage)}</td><td class="num">− ${chf(p.alv)}</td></tr>
+<tr><td>BVG / Pensionskasse</td><td class="num">variabel</td><td class="num basis">Koord. Lohn</td><td class="num">${p.bvg ? '− ' + chf(p.bvg) : '0.00'}</td></tr>
+<tr class="totalrow"><td>Total Abzüge</td><td></td><td></td><td class="num">− ${chf(p.deduction_64)}</td></tr>
+<tr class="net"><td>Nettolohn / Auszahlung</td><td></td><td></td><td class="num">${chf(p.net_wage)}</td></tr>
 </tbody></table>
-<div class="rule">Berechnung pro Verkaufstag: CHF 200.00 Grundlohn bis CHF 600.00 Tagesumsatz, darüber zusätzlich 30 % des Mehrumsatzes. Vom Monats-Bruttolohn werden 6.4 % abgezogen.</div>
+<div class="rule">Berechnung pro Verkaufstag: CHF 200.00 Grundlohn bis CHF 600.00 Tagesumsatz, darüber zusätzlich 30 % des Mehrumsatzes. Abzüge auf dem Monats-Bruttolohn: AHV/IV/EO 5.30 %, ALV 1.10 %.</div>
 <div class="sign"><div>Ort, Datum / Arbeitgeber</div><div>Ort, Datum / ${escapeHtml(person)}</div></div>
 <footer>${DRY_RUN ? 'TESTMODUS · ' : ''}Erstellt über das bexio Lieferportal</footer>
 </section><script src="/print.js?v=1.14"></script></body></html>`);
