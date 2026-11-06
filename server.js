@@ -1068,6 +1068,77 @@ app.post('/api/drafts/process-all', requireLogin, requireCsrf, async (req, res) 
 });
 
 
+// Arbeitnehmer-Beitragssätze Sozialversicherungen (Total 6.4 %).
+const PAYROLL_RATES = { ahv_iv_eo_permille: 53, alv_permille: 11 };
+
+// Märit-Bern-Lohn aus manuellen Buchungen berechnen (für Auswertung und Lohnabrechnung).
+function computeMarketPayroll(manualRows) {
+  // Märit Bern: Lohn pro Person und Verkaufstag.
+  // Tageslohn = CHF 200 bis inkl. CHF 600 Umsatz,
+  // darüber 30% des Umsatzanteils über CHF 600 zusätzlich.
+  // Vom Monats-Bruttolohn werden 6.4% abgezogen.
+  const marketDaily = new Map();
+  for (const r of manualRows) {
+    if (r.category !== 'Märit Bern' || !(r.employee_id || r.salesperson)) continue;
+    // Gruppiert wird nach Mitarbeiter-ID; Altbuchungen ohne ID nach Namen.
+    const personKey = r.employee_id ? `e:${r.employee_id}` : `n:${r.salesperson}`;
+    const person = String(r.person_name || r.salesperson || '').trim() || 'Unbekannt';
+    const day = String(r.sale_date).slice(0,10);
+    const key = `${personKey}|${day}`;
+    const row = marketDaily.get(key) || { personKey, employee_id:r.employee_id ? Number(r.employee_id) : null, salesperson:person, sale_date:day, revenue:0, cash:0, twint:0 };
+    row.revenue += Number(r.amount_chf || 0);
+    row.cash += Number(r.cash_chf || 0);
+    row.twint += Number(r.twint_chf || 0);
+    marketDaily.set(key, row);
+  }
+
+  const payrollMap = new Map();
+  for (const d of marketDaily.values()) {
+    // Tageslohn auf Rappen runden und gerundete Werte summieren, damit die Summe der
+    // Tageslöhne auf der Lohnabrechnung exakt dem Bruttolohn entspricht.
+    // In ganzen Rappen rechnen, damit z. B. 0.5 Rappen korrekt aufgerundet werden.
+    const revenueRp = Math.round(d.revenue * 100);
+    const gross = (20000 + Math.round(Math.max(0, revenueRp - 60000) * 3 / 10)) / 100;
+    const p = payrollMap.get(d.personKey) || { employee_id:d.employee_id, salesperson:d.salesperson, days:0, revenue:0, gross_wage:0, deduction_64:0, net_wage:0, daily:[] };
+    p.days += 1;
+    p.revenue += d.revenue;
+    p.gross_wage += gross;
+    p.daily.push({
+      sale_date:d.sale_date,
+      revenue:Number(d.revenue.toFixed(2)),
+      cash:Number(d.cash.toFixed(2)),
+      twint:Number(d.twint.toFixed(2)),
+      gross_wage:Number(gross.toFixed(2))
+    });
+    payrollMap.set(d.personKey, p);
+  }
+
+  return [...payrollMap.values()].map(p => {
+    // Erst auf Rappen runden, dann abziehen: so ergibt Brutto − Abzug exakt Netto.
+    // Jeder Abzug wird einzeln auf Rappen gerundet; Total = Summe der Einzelabzüge.
+    // Rechnung in ganzen Rappen (Sätze in Promille): 215.00 × 5.3 % = 11.395 → 11.40.
+    const grossRp = Math.round(p.gross_wage * 100);
+    const ahvRp = Math.round(grossRp * PAYROLL_RATES.ahv_iv_eo_permille / 1000);
+    const alvRp = Math.round(grossRp * PAYROLL_RATES.alv_permille / 1000);
+    const bvgRp = 0; // BVG: variabel, auf koordiniertem Lohn – bei diesen Löhnen kein Abzug
+    const gross = grossRp / 100, ahv = ahvRp / 100, alv = alvRp / 100, bvg = bvgRp / 100;
+    const deduction = (ahvRp + alvRp + bvgRp) / 100;
+    return {
+      employee_id:p.employee_id,
+      salesperson:p.salesperson,
+      days:p.days,
+      revenue:Number(p.revenue.toFixed(2)),
+      gross_wage:gross,
+      ahv_iv_eo:ahv,
+      alv,
+      bvg,
+      deduction_64:deduction,
+      net_wage:(grossRp - ahvRp - alvRp - bvgRp) / 100,
+      daily:p.daily.sort((a,b)=>a.sale_date.localeCompare(b.sale_date))
+    };
+  }).sort((a,b)=>a.salesperson.localeCompare(b.salesperson,'de-CH'));
+}
+
 function monthRange(rawMonth) {
   const month = /^\d{4}-\d{2}$/.test(String(rawMonth || '')) ? String(rawMonth) : zurichToday().slice(0,7);
   const [y, m] = month.split('-').map(Number);
@@ -1100,11 +1171,13 @@ app.get('/api/reporting/monthly', requireLogin, async (req, res) => {
     `, [start, next]);
 
     const manual = await pool.query(`
-      SELECT id,sale_date,category,amount_chf,note,article_id,article_name,quantity,unit_name,
-             salesperson,cash_chf,twint_chf,created_at
-      FROM manual_sales
-      WHERE sale_date >= $1::date AND sale_date < $2::date
-      ORDER BY sale_date,created_at
+      SELECT m.id,m.sale_date,m.category,m.amount_chf,m.note,m.article_id,m.article_name,m.quantity,m.unit_name,
+             m.salesperson,m.employee_id,m.cash_chf,m.twint_chf,m.created_at,
+             NULLIF(trim(concat_ws(' ', e.first_name, e.last_name)), '') AS person_name
+      FROM manual_sales m
+      LEFT JOIN employees e ON e.id = m.employee_id
+      WHERE m.sale_date >= $1::date AND m.sale_date < $2::date
+      ORDER BY m.sale_date,m.created_at
     `, [start, next]);
 
     const customerMap = new Map();
@@ -1185,52 +1258,7 @@ app.get('/api/reporting/monthly', requireLogin, async (req, res) => {
     });
 
 
-    // Märit Bern: Lohn pro Person und Verkaufstag.
-    // Tageslohn = CHF 200 bis inkl. CHF 600 Umsatz,
-    // darüber 30% des Umsatzanteils über CHF 600 zusätzlich.
-    // Vom Monats-Bruttolohn werden 6.4% abgezogen.
-    const marketDaily = new Map();
-    for (const r of manual.rows) {
-      if (r.category !== 'Märit Bern' || !r.salesperson) continue;
-      const person = String(r.salesperson);
-      const day = String(r.sale_date).slice(0,10);
-      const key = `${person}|${day}`;
-      const row = marketDaily.get(key) || { salesperson:person, sale_date:day, revenue:0, cash:0, twint:0 };
-      row.revenue += Number(r.amount_chf || 0);
-      row.cash += Number(r.cash_chf || 0);
-      row.twint += Number(r.twint_chf || 0);
-      marketDaily.set(key, row);
-    }
-
-    const payrollMap = new Map();
-    for (const d of marketDaily.values()) {
-      const gross = 200 + Math.max(0, d.revenue - 600) * 0.30;
-      const p = payrollMap.get(d.salesperson) || { salesperson:d.salesperson, days:0, revenue:0, gross_wage:0, deduction_64:0, net_wage:0, daily:[] };
-      p.days += 1;
-      p.revenue += d.revenue;
-      p.gross_wage += gross;
-      p.daily.push({
-        sale_date:d.sale_date,
-        revenue:Number(d.revenue.toFixed(2)),
-        cash:Number(d.cash.toFixed(2)),
-        twint:Number(d.twint.toFixed(2)),
-        gross_wage:Number(gross.toFixed(2))
-      });
-      payrollMap.set(d.salesperson, p);
-    }
-
-    const market_payroll = [...payrollMap.values()].map(p => {
-      const deduction = p.gross_wage * 0.064;
-      return {
-        salesperson:p.salesperson,
-        days:p.days,
-        revenue:Number(p.revenue.toFixed(2)),
-        gross_wage:Number(p.gross_wage.toFixed(2)),
-        deduction_64:Number(deduction.toFixed(2)),
-        net_wage:Number((p.gross_wage - deduction).toFixed(2)),
-        daily:p.daily.sort((a,b)=>a.sale_date.localeCompare(b.sale_date))
-      };
-    }).sort((a,b)=>a.salesperson.localeCompare(b.salesperson,'de-CH'));
+    const market_payroll = computeMarketPayroll(manual.rows);
 
     res.json({
       month,
@@ -1248,6 +1276,7 @@ app.get('/api/reporting/monthly', requireLogin, async (req, res) => {
       market_payroll,
       manual_sales:manual.rows.map(r => ({
         ...r,
+        salesperson:r.person_name || r.salesperson,
         amount_chf:Number(r.amount_chf),
         quantity:r.quantity == null ? null : Number(r.quantity)
       }))
@@ -1268,6 +1297,7 @@ app.post('/api/manual-sales', requireLogin, requireCsrf, async (req, res) => {
 
   let amount = 0;
   let salesperson = null;
+  let employeeId = null;
   let cash = null;
   let twint = null;
   let articleId = null;
@@ -1276,8 +1306,12 @@ app.post('/api/manual-sales', requireLogin, requireCsrf, async (req, res) => {
   let quantity = null;
 
   if (category === 'Märit Bern') {
-    salesperson = String(req.body?.salesperson || '').trim();
-    if (!['Victoria','Sali'].includes(salesperson)) return res.status(422).json({ error:'Bitte Victoria oder Sali auswählen.' });
+    employeeId = Number(req.body?.employee_id);
+    const emp = Number.isInteger(employeeId) && employeeId > 0
+      ? await pool.query('SELECT id,first_name,last_name FROM employees WHERE id=$1 AND active=true', [employeeId])
+      : { rowCount: 0 };
+    if (!emp.rowCount) return res.status(422).json({ error:'Bitte eine aktive Person auswählen.' });
+    salesperson = [emp.rows[0].first_name, emp.rows[0].last_name].filter(Boolean).join(' ');
 
     cash = Number(req.body?.cash_chf || 0);
     twint = Number(req.body?.twint_chf || 0);
@@ -1309,17 +1343,17 @@ app.post('/api/manual-sales', requireLogin, requireCsrf, async (req, res) => {
   await pool.query(`
     INSERT INTO manual_sales(
       id,sale_date,category,amount_chf,note,article_id,article_name,quantity,unit_name,
-      salesperson,cash_chf,twint_chf,created_by
+      salesperson,cash_chf,twint_chf,created_by,employee_id
     )
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
   `, [
     id,saleDate,category,amount,note,articleId,articleName,quantity,unitName,
-    salesperson,cash,twint,req.session.user.id
+    salesperson,cash,twint,req.session.user.id,employeeId
   ]);
 
   await audit(req, 'manual_sale.create', 'manual_sale', id, {
     sale_date:saleDate,category,amount_chf:amount,article_id:articleId,quantity,
-    salesperson,cash_chf:cash,twint_chf:twint
+    salesperson,employee_id:employeeId,cash_chf:cash,twint_chf:twint
   });
   res.status(201).json({ ok:true,id });
 });
@@ -1332,6 +1366,153 @@ app.delete('/api/manual-sales/:id', requireLogin, requireCsrf, async (req, res) 
   res.json({ ok:true });
 });
 
+
+// ---------- Mitarbeitende (für Märit-Bern-Erfassung und Lohnabrechnung) ----------
+function cleanEmployee(body) {
+  const t = (v, max) => String(v ?? '').trim().slice(0, max) || null;
+  return {
+    first_name: t(body?.first_name, 80),
+    last_name: t(body?.last_name, 80) || '',
+    street: t(body?.street, 160),
+    zip: t(body?.zip, 12),
+    city: t(body?.city, 80),
+    ahv_number: t(body?.ahv_number, 20),
+    active: body?.active !== false
+  };
+}
+function validateEmployee(e) {
+  if (!e.first_name) return 'Vorname fehlt.';
+  if (e.ahv_number && !/^756\.?\d{4}\.?\d{4}\.?\d{2}$/.test(e.ahv_number)) return 'AHV-Nr. im Format 756.1234.5678.97 eingeben (oder leer lassen).';
+  return null;
+}
+
+app.get('/api/employees', requireLogin, async (req, res) => {
+  const isAdmin = req.session.user.role === 'admin';
+  const r = await pool.query('SELECT * FROM employees ORDER BY active DESC, first_name, last_name');
+  // Adressen und AHV-Nr. nur für Admins; für die Auswahl genügt der Name.
+  res.json(r.rows.map(e => isAdmin ? e : { id: e.id, first_name: e.first_name, last_name: e.last_name, active: e.active }));
+});
+
+app.post('/api/employees', requireLogin, requireAdmin, requireCsrf, async (req, res) => {
+  const e = cleanEmployee(req.body);
+  const err = validateEmployee(e);
+  if (err) return res.status(422).json({ error: err });
+  const r = await pool.query(
+    `INSERT INTO employees(first_name,last_name,street,zip,city,ahv_number,active)
+     VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [e.first_name, e.last_name, e.street, e.zip, e.city, e.ahv_number, e.active]
+  );
+  await audit(req, 'employee.create', 'employee', r.rows[0].id, { name: `${e.first_name} ${e.last_name}`.trim() });
+  res.status(201).json(r.rows[0]);
+});
+
+app.put('/api/employees/:id', requireLogin, requireAdmin, requireCsrf, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(422).json({ error: 'Ungültige Person.' });
+  const e = cleanEmployee(req.body);
+  const err = validateEmployee(e);
+  if (err) return res.status(422).json({ error: err });
+  const r = await pool.query(
+    `UPDATE employees SET first_name=$2,last_name=$3,street=$4,zip=$5,city=$6,ahv_number=$7,active=$8,updated_at=now()
+     WHERE id=$1 RETURNING *`,
+    [id, e.first_name, e.last_name, e.street, e.zip, e.city, e.ahv_number, e.active]
+  );
+  if (!r.rowCount) return res.status(404).json({ error: 'Person nicht gefunden.' });
+  await audit(req, 'employee.update', 'employee', id, { name: `${e.first_name} ${e.last_name}`.trim(), active: e.active });
+  res.json(r.rows[0]);
+});
+
+// Lohnabrechnung Märit Bern als A4-Druckseite (im Druckdialog „Als PDF speichern“).
+app.get('/payroll-slip', async (req, res) => {
+  try {
+    if (!req.session?.user?.id) return res.redirect('/');
+    const { month, start, next } = monthRange(req.query.month);
+    const employeeId = Number(req.query.employee);
+    if (!Number.isInteger(employeeId) || employeeId <= 0) return res.status(400).send('Unbekannte Person.');
+    const empResult = await pool.query('SELECT * FROM employees WHERE id=$1', [employeeId]);
+    if (!empResult.rowCount) return res.status(404).send('Person nicht gefunden.');
+    const emp = empResult.rows[0];
+    const person = [emp.first_name, emp.last_name].filter(Boolean).join(' ');
+
+    const manual = await pool.query(`
+      SELECT sale_date,category,amount_chf,salesperson,employee_id,cash_chf,twint_chf,$4::text AS person_name
+      FROM manual_sales
+      WHERE category='Märit Bern' AND employee_id=$3
+        AND sale_date >= $1::date AND sale_date < $2::date
+      ORDER BY sale_date,created_at
+    `, [start, next, employeeId, person]);
+    const p = computeMarketPayroll(manual.rows)[0];
+    if (!p) return res.status(404).type('html').send(`<!doctype html><meta charset="utf-8"><p>Für ${escapeHtml(person)} gibt es im ${escapeHtml(month)} keine Märit-Bern-Buchungen.</p><p><a href="/">Zurück</a></p>`);
+
+    const [y, m] = month.split('-').map(Number);
+    const monthLabel = new Intl.DateTimeFormat('de-CH', { month: 'long', year: 'numeric' }).format(new Date(y, m - 1, 15));
+    const lastDay = new Date(y, m, 0).getDate();
+    const chf = v => new Intl.NumberFormat('de-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(v || 0));
+    const dmy = iso => { const [yy, mm, dd] = String(iso).slice(0,10).split('-'); return `${dd}.${mm}.${yy}`; };
+    const created = new Intl.DateTimeFormat('de-CH', { timeZone: 'Europe/Zurich' }).format(new Date());
+
+    const rows = p.daily.map(d => {
+      const bonus = (Math.round(d.gross_wage * 100) - 20000) / 100; // identisch gerundet wie der Tageslohn
+      return `<tr><td>${dmy(d.sale_date)}</td><td class="num">${chf(d.cash)}</td><td class="num">${chf(d.twint)}</td><td class="num">${chf(d.revenue)}</td><td class="num">200.00</td><td class="num">${chf(bonus)}</td><td class="num strong">${chf(d.gross_wage)}</td></tr>`;
+    }).join('');
+
+    await audit(req, 'payroll_slip.view', 'payroll', `${employeeId}:${month}`, { gross_wage: p.gross_wage, net_wage: p.net_wage });
+    res.set('Cache-Control', 'no-store');
+    res.type('html').send(`<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lohnabrechnung ${escapeHtml(person)} ${escapeHtml(month)}</title><style>
+@page{size:A4;margin:16mm 18mm 14mm 22mm}*{box-sizing:border-box}html,body{margin:0;padding:0}
+body{font-family:Arial,Helvetica,sans-serif;color:#111;background:#fff;font-size:11.5px;line-height:1.4}
+.sheet{position:relative}
+.head{display:flex;justify-content:space-between;align-items:flex-start}
+.sender{font-size:10.5px;line-height:1.5}.sender strong{font-size:12.5px;display:block;margin-bottom:.8mm}
+.recipient{margin-top:4mm;margin-left:83mm;font-size:12px}.recipient strong{font-size:15px}
+h1{font-size:24px;margin:9mm 0 1mm}.sub{color:#555;margin-bottom:5mm}
+.meta{display:flex;gap:6mm;margin-bottom:8mm}.meta>div{flex:1 1 0}.meta>div:first-child{flex-grow:1.5}.meta strong{white-space:nowrap}.meta div{border-bottom:1px solid #aaa;padding-bottom:2mm}
+.meta span{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#666;margin-bottom:1mm}.meta strong{font-size:13px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#444;margin:6mm 0 2mm}
+table{width:100%;border-collapse:collapse}th{font-size:9px;text-transform:uppercase;letter-spacing:.4px;color:#555;text-align:left;border-bottom:1.5px solid #222;padding:2mm 1.5mm}
+td{padding:1.4mm 1.5mm;border-bottom:1px solid #ddd}.num{text-align:right}.strong{font-weight:700}
+tfoot td{border-top:1.5px solid #222;border-bottom:none;font-weight:700}
+.deductions .basis{font-style:italic;color:#555;font-size:10px}.deductions .grossrow td{font-weight:700}
+.deductions .totalrow td{font-weight:700;border-top:1.5px solid #222}
+.deductions .net td{font-size:14px;font-weight:800;border-top:2px solid #111;border-bottom:2px solid #111}
+.rule{font-size:9.5px;color:#555;margin-top:5mm;line-height:1.5}
+.sign{display:grid;grid-template-columns:1fr 1fr;gap:20mm;margin-top:11mm}.sign div{border-top:1px solid #111;padding-top:1.5mm;font-size:9.5px;color:#444}
+footer{margin-top:5mm;border-top:1px solid #ddd;padding-top:2mm;color:#777;font-size:9px}
+@media screen{body{background:#ececec;padding:12px}.sheet{width:210mm;min-height:297mm;padding:16mm 18mm 14mm 22mm;margin:0 auto;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.14)}}
+tr,.deductions,.sign{break-inside:avoid}
+</style></head><body><section class="sheet">
+<div class="head"><div class="sender"><strong>fungi futuri GmbH</strong>Erlenstrasse 43<br>3612 Steffisburg</div></div>
+<div class="recipient"><strong>${escapeHtml(person)}</strong>${emp.street ? `<br>${escapeHtml(emp.street)}` : ''}${(emp.zip || emp.city) ? `<br>${escapeHtml([emp.zip, emp.city].filter(Boolean).join(' '))}` : ''}</div>
+<h1>Lohnabrechnung</h1><div class="sub">Märit Bern · ${escapeHtml(monthLabel)}</div>
+<div class="meta">
+  <div><span>Abrechnungsperiode</span><strong>01.${String(m).padStart(2,'0')}.${y} – ${lastDay}.${String(m).padStart(2,'0')}.${y}</strong></div>
+  <div><span>Arbeitstage</span><strong>${p.days}</strong></div>
+  ${emp.ahv_number ? `<div><span>AHV-Nr.</span><strong>${escapeHtml(emp.ahv_number)}</strong></div>` : ''}
+  <div><span>Erstellt am</span><strong>${created}</strong></div>
+</div>
+<h2>Verkaufstage</h2>
+<table><thead><tr><th>Datum</th><th class="num">Bar</th><th class="num">TWINT</th><th class="num">Tagesumsatz</th><th class="num">Grundlohn</th><th class="num">30 % über 600</th><th class="num">Tageslohn</th></tr></thead>
+<tbody>${rows}</tbody>
+<tfoot><tr><td>Total</td><td class="num">${chf(p.daily.reduce((a,d)=>a+d.cash,0))}</td><td class="num">${chf(p.daily.reduce((a,d)=>a+d.twint,0))}</td><td class="num">${chf(p.revenue)}</td><td></td><td></td><td class="num">${chf(p.gross_wage)}</td></tr></tfoot></table>
+<h2>Lohn und Abzüge</h2>
+<table class="deductions"><thead><tr><th>Position</th><th class="num">Satz</th><th class="num">Basis</th><th class="num">Betrag CHF</th></tr></thead><tbody>
+<tr class="grossrow"><td>Bruttolohn</td><td></td><td></td><td class="num">${chf(p.gross_wage)}</td></tr>
+<tr><td>AHV/IV/EO</td><td class="num">5.30 %</td><td class="num basis">AHV-pfl. Lohn ${chf(p.gross_wage)}</td><td class="num">− ${chf(p.ahv_iv_eo)}</td></tr>
+<tr><td>ALV (bis CHF 148'200/J)</td><td class="num">1.10 %</td><td class="num basis">AHV-pfl. Lohn ${chf(p.gross_wage)}</td><td class="num">− ${chf(p.alv)}</td></tr>
+<tr><td>BVG / Pensionskasse</td><td class="num">variabel</td><td class="num basis">Koord. Lohn</td><td class="num">${p.bvg ? '− ' + chf(p.bvg) : '0.00'}</td></tr>
+<tr class="totalrow"><td>Total Abzüge</td><td></td><td></td><td class="num">− ${chf(p.deduction_64)}</td></tr>
+<tr class="net"><td>Nettolohn / Auszahlung</td><td></td><td></td><td class="num">${chf(p.net_wage)}</td></tr>
+</tbody></table>
+<div class="rule">Berechnung pro Verkaufstag: CHF 200.00 Grundlohn bis CHF 600.00 Tagesumsatz, darüber zusätzlich 30 % des Mehrumsatzes. Abzüge auf dem Monats-Bruttolohn: AHV/IV/EO 5.30 %, ALV 1.10 %.</div>
+<div class="sign"><div>Ort, Datum / Arbeitgeber</div><div>Ort, Datum / ${escapeHtml(person)}</div></div>
+<footer>${DRY_RUN ? 'TESTMODUS · ' : ''}Erstellt über das bexio Lieferportal</footer>
+</section><script src="/print.js?v=1.14"></script></body></html>`);
+  } catch (err) {
+    console.error('Lohnabrechnung fehlgeschlagen:', err);
+    if (!res.headersSent) res.status(500).type('html').send(`<!doctype html><meta charset="utf-8"><p>Lohnabrechnung konnte nicht erstellt werden: ${escapeHtml(err.message || '')}</p><p><a href="/">Zurück</a></p>`);
+  }
+});
 
 app.get('/print', async (req, res) => {
   try {

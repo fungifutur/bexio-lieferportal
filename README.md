@@ -264,3 +264,18 @@ Hinweise:
 - Die gespeicherte bexio-Verbindung ist im Backup mit `APP_ENCRYPTION_KEY` verschlüsselt. Diesen Wert ebenfalls im Passwortmanager ablegen; ohne ihn muss nach einer Wiederherstellung nur bexio neu verbunden werden.
 - Bei öffentlichen Repos deaktiviert GitHub zeitgesteuerte Workflows nach 60 Tagen ohne Aktivität im Repo (GitHub schickt vorher eine E-Mail). Repo privat stellen oder den Workflow bei Bedarf wieder aktivieren.
 - Wiederherstellung testen: `gpg --decrypt DATEI.dump.gpg | pg_restore --no-owner --clean --if-exists -d "<URL einer LEEREN Test-Datenbank>"`
+
+## v1.20 Lohnabrechnung Märit Bern
+
+In der Monatsauswertung hat jede Person (Victoria, Sali) unter „Lohn Märit Bern“ den Button **Lohnabrechnung erstellen**. Er öffnet eine A4-Lohnabrechnung für den gewählten Monat mit allen Verkaufstagen (Bar, TWINT, Tagesumsatz, Grundlohn, 30 % über CHF 600, Tageslohn), Bruttolohn, Abzügen aufgeschlüsselt nach AHV/IV/EO 5.30 %, ALV 1.10 % und BVG (variabel, aktuell 0.00), Nettolohn sowie Unterschriftsfeldern. Jeder Abzug wird einzeln auf Rappen gerundet; „Total Abzüge“ ist ihre Summe. Passt bis ca. 10 Verkaufstage auf eine A4-Seite, bei mehr Tagen läuft sie auf eine zweite Seite weiter. Der Druckdialog öffnet sich automatisch; als Drucker **„Als PDF speichern“** wählen.
+
+Tageslöhne werden jetzt pro Tag auf Rappen gerundet und dann summiert, damit die Summe der Tageslöhne auf der Abrechnung exakt dem Bruttolohn entspricht (Unterschied zu vorher höchstens 1 Rappen).
+
+## v1.21 Mitarbeitende mit Adresse
+
+- In der Auswertung gibt es unter „Lohn Märit Bern“ den Bereich **Mitarbeitende verwalten** (nur Admin): Vorname, Nachname, Strasse, PLZ, Ort und optional AHV-Nr. erfassen und bearbeiten. Personen werden nicht gelöscht, sondern auf „inaktiv“ gesetzt; so bleiben alte Abrechnungen korrekt.
+- Bei der Märit-Bern-Buchung wird die Person per Dropdown (nur Name) gewählt. Die Lohnabrechnung übernimmt Name, Adresse und AHV-Nr. automatisch.
+- Victoria und Sali werden beim ersten Start automatisch übernommen und ihre bisherigen Buchungen verknüpft. Danach nur noch Nachname und Adresse ergänzen.
+- Fehlende Angaben werden in der Liste rot markiert („Angaben für Lohnabrechnung unvollständig“).
+- Abzüge werden in ganzen Rappen berechnet (z. B. 215.00 × 5.3 % = 11.395 → 11.40).
+- Behoben: Bei „Märit Bern“ waren die Felder Betrag/Produkt/Menge fälschlich weiter sichtbar.

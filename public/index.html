@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>bexio Lieferportal</title>
-  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/style.css?v=1.21">
 </head>
 <body>
   <main class="wrap">
@@ -125,10 +125,7 @@
 
           <div id="manualBernFields" class="manual-bern-fields" hidden>
             <label>Person
-              <select id="manualSalePerson">
-                <option>Victoria</option>
-                <option>Sali</option>
-              </select>
+              <select id="manualSalePerson"><option value="">Lade …</option></select>
             </label>
             <label>Bar CHF<input id="manualSaleCash" type="number" min="0" step="0.05" placeholder="0.00"></label>
             <label>TWINT CHF<input id="manualSaleTwint" type="number" min="0" step="0.05" placeholder="0.00"></label>
@@ -143,12 +140,32 @@
 
         <hr class="section-rule">
         <h3>Lohn Märit Bern</h3>
-        <p class="muted admin-sub">Bis CHF 600 Tagesumsatz: CHF 200 Lohn. Über CHF 600 zusätzlich 30% des Mehrumsatzes. Danach 6.4% Abzug.</p>
+        <p class="muted admin-sub">Bis CHF 600 Tagesumsatz: CHF 200 Lohn. Über CHF 600 zusätzlich 30% des Mehrumsatzes. Abzüge: AHV/IV/EO 5.30 %, ALV 1.10 %.</p>
         <div id="marketPayrollCards" class="payroll-grid"></div>
         <div class="table-wrap"><table class="report-table">
           <thead><tr><th>Person</th><th>Datum</th><th>Bar</th><th>TWINT</th><th>Tagesumsatz</th><th>Bruttolohn</th></tr></thead>
           <tbody id="marketPayrollDailyRows"></tbody>
         </table></div>
+
+        <details id="employeeAdmin" class="employee-admin" hidden>
+          <summary>Mitarbeitende verwalten (Name und Adresse für die Lohnabrechnung)</summary>
+          <div id="employeeList" class="employee-list"></div>
+          <form id="employeeForm" class="employee-form" autocomplete="off">
+            <input type="hidden" id="employeeId">
+            <label>Vorname<input id="empFirst" required maxlength="80"></label>
+            <label>Nachname<input id="empLast" maxlength="80"></label>
+            <label class="wide">Strasse, Nr.<input id="empStreet" maxlength="160"></label>
+            <label>PLZ<input id="empZip" maxlength="12" inputmode="numeric"></label>
+            <label>Ort<input id="empCity" maxlength="80"></label>
+            <label>AHV-Nr. (optional)<input id="empAhv" maxlength="20" placeholder="756.1234.5678.97"></label>
+            <label class="check"><input type="checkbox" id="empActive" checked> aktiv (in Auswahl sichtbar)</label>
+            <div class="employee-form-actions">
+              <button type="submit" id="empSaveBtn">Person hinzufügen</button>
+              <button type="button" class="secondary" id="empCancelBtn" hidden>Abbrechen</button>
+            </div>
+          </form>
+          <div id="employeeMsg" class="msg"></div>
+        </details>
 
         <h3>Manuelle Buchungen im Monat</h3>
         <div class="table-wrap"><table class="report-table">
@@ -181,6 +198,6 @@
       </section>
     </section>
   </main>
-  <script src="/app.js?v=1.19" defer></script>
+  <script src="/app.js?v=1.21" defer></script>
 </body>
 </html>
