@@ -264,3 +264,9 @@ Hinweise:
 - Die gespeicherte bexio-Verbindung ist im Backup mit `APP_ENCRYPTION_KEY` verschlüsselt. Diesen Wert ebenfalls im Passwortmanager ablegen; ohne ihn muss nach einer Wiederherstellung nur bexio neu verbunden werden.
 - Bei öffentlichen Repos deaktiviert GitHub zeitgesteuerte Workflows nach 60 Tagen ohne Aktivität im Repo (GitHub schickt vorher eine E-Mail). Repo privat stellen oder den Workflow bei Bedarf wieder aktivieren.
 - Wiederherstellung testen: `gpg --decrypt DATEI.dump.gpg | pg_restore --no-owner --clean --if-exists -d "<URL einer LEEREN Test-Datenbank>"`
+
+## v1.20 Lohnabrechnung Märit Bern
+
+In der Monatsauswertung hat jede Person (Victoria, Sali) unter „Lohn Märit Bern“ den Button **Lohnabrechnung erstellen**. Er öffnet eine A4-Lohnabrechnung für den gewählten Monat mit allen Verkaufstagen (Bar, TWINT, Tagesumsatz, Grundlohn, 30 % über CHF 600, Tageslohn), Bruttolohn, Abzug 6.4 % und Nettolohn sowie Unterschriftsfeldern. Der Druckdialog öffnet sich automatisch; als Drucker **„Als PDF speichern“** wählen.
+
+Tageslöhne werden jetzt pro Tag auf Rappen gerundet und dann summiert, damit die Summe der Tageslöhne auf der Abrechnung exakt dem Bruttolohn entspricht (Unterschied zu vorher höchstens 1 Rappen).

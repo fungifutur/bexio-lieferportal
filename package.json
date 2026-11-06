@@ -1,6 +1,6 @@
 {
   "name": "bexio-lieferportal",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "private": true,
   "description": "Internes Lieferportal fuer bexio: Kunden-/Produktauswahl, Sammelauftraege, Lieferscheine und Massendruck.",
   "main": "server.js",

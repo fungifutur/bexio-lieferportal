@@ -447,6 +447,7 @@ async function loadReporting(){
         <div><span>Bruttolohn</span><strong>${chf(p.gross_wage)}</strong></div>
         <div><span>Abzug 6.4%</span><strong>− ${chf(p.deduction_64)}</strong></div>
         <div class="net"><span>Nettolohn</span><strong>${chf(p.net_wage)}</strong></div>
+        <button type="button" class="secondary small payrollSlipBtn" data-person="${esc(p.salesperson)}" data-month="${esc(r.month||month)}">Lohnabrechnung erstellen</button>
       </div>`).join('') || '<div class="muted">Noch keine Märit-Bern-Lohnbuchungen in diesem Monat.</div>';
 
     $('#marketPayrollDailyRows').innerHTML=(r.market_payroll||[]).flatMap(p=>
@@ -473,6 +474,12 @@ async function loadReporting(){
     </tr>`).join('') || '<tr><td colspan="9" class="muted">Keine manuellen Buchungen in diesem Monat.</td></tr>';
   }catch(e){ msg($('#reportWarning'),e.message,'error'); }
 }
+
+$('#marketPayrollCards').addEventListener('click',(e)=>{
+  const btn=e.target.closest('.payrollSlipBtn'); if(!btn)return;
+  const q=new URLSearchParams({month:btn.dataset.month,person:btn.dataset.person});
+  window.open(`/payroll-slip?${q}`,'_blank','noopener');
+});
 
 $('#reportingBtn').addEventListener('click',openReporting);
 $('#closeReportingBtn').addEventListener('click',()=>{$('#reportingCard').hidden=true});

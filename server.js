@@ -1068,6 +1068,60 @@ app.post('/api/drafts/process-all', requireLogin, requireCsrf, async (req, res) 
 });
 
 
+// Märit-Bern-Lohn aus manuellen Buchungen berechnen (für Auswertung und Lohnabrechnung).
+function computeMarketPayroll(manualRows) {
+  // Märit Bern: Lohn pro Person und Verkaufstag.
+  // Tageslohn = CHF 200 bis inkl. CHF 600 Umsatz,
+  // darüber 30% des Umsatzanteils über CHF 600 zusätzlich.
+  // Vom Monats-Bruttolohn werden 6.4% abgezogen.
+  const marketDaily = new Map();
+  for (const r of manualRows) {
+    if (r.category !== 'Märit Bern' || !r.salesperson) continue;
+    const person = String(r.salesperson);
+    const day = String(r.sale_date).slice(0,10);
+    const key = `${person}|${day}`;
+    const row = marketDaily.get(key) || { salesperson:person, sale_date:day, revenue:0, cash:0, twint:0 };
+    row.revenue += Number(r.amount_chf || 0);
+    row.cash += Number(r.cash_chf || 0);
+    row.twint += Number(r.twint_chf || 0);
+    marketDaily.set(key, row);
+  }
+
+  const payrollMap = new Map();
+  for (const d of marketDaily.values()) {
+    // Tageslohn auf Rappen runden und gerundete Werte summieren, damit die Summe der
+    // Tageslöhne auf der Lohnabrechnung exakt dem Bruttolohn entspricht.
+    const gross = Math.round((200 + Math.max(0, d.revenue - 600) * 0.30 + Number.EPSILON) * 100) / 100;
+    const p = payrollMap.get(d.salesperson) || { salesperson:d.salesperson, days:0, revenue:0, gross_wage:0, deduction_64:0, net_wage:0, daily:[] };
+    p.days += 1;
+    p.revenue += d.revenue;
+    p.gross_wage += gross;
+    p.daily.push({
+      sale_date:d.sale_date,
+      revenue:Number(d.revenue.toFixed(2)),
+      cash:Number(d.cash.toFixed(2)),
+      twint:Number(d.twint.toFixed(2)),
+      gross_wage:Number(gross.toFixed(2))
+    });
+    payrollMap.set(d.salesperson, p);
+  }
+
+  return [...payrollMap.values()].map(p => {
+    // Erst auf Rappen runden, dann abziehen: so ergibt Brutto − Abzug exakt Netto.
+    const gross = Number(p.gross_wage.toFixed(2));
+    const deduction = Number((gross * 0.064).toFixed(2));
+    return {
+      salesperson:p.salesperson,
+      days:p.days,
+      revenue:Number(p.revenue.toFixed(2)),
+      gross_wage:gross,
+      deduction_64:deduction,
+      net_wage:Number((gross - deduction).toFixed(2)),
+      daily:p.daily.sort((a,b)=>a.sale_date.localeCompare(b.sale_date))
+    };
+  }).sort((a,b)=>a.salesperson.localeCompare(b.salesperson,'de-CH'));
+}
+
 function monthRange(rawMonth) {
   const month = /^\d{4}-\d{2}$/.test(String(rawMonth || '')) ? String(rawMonth) : zurichToday().slice(0,7);
   const [y, m] = month.split('-').map(Number);
@@ -1185,52 +1239,7 @@ app.get('/api/reporting/monthly', requireLogin, async (req, res) => {
     });
 
 
-    // Märit Bern: Lohn pro Person und Verkaufstag.
-    // Tageslohn = CHF 200 bis inkl. CHF 600 Umsatz,
-    // darüber 30% des Umsatzanteils über CHF 600 zusätzlich.
-    // Vom Monats-Bruttolohn werden 6.4% abgezogen.
-    const marketDaily = new Map();
-    for (const r of manual.rows) {
-      if (r.category !== 'Märit Bern' || !r.salesperson) continue;
-      const person = String(r.salesperson);
-      const day = String(r.sale_date).slice(0,10);
-      const key = `${person}|${day}`;
-      const row = marketDaily.get(key) || { salesperson:person, sale_date:day, revenue:0, cash:0, twint:0 };
-      row.revenue += Number(r.amount_chf || 0);
-      row.cash += Number(r.cash_chf || 0);
-      row.twint += Number(r.twint_chf || 0);
-      marketDaily.set(key, row);
-    }
-
-    const payrollMap = new Map();
-    for (const d of marketDaily.values()) {
-      const gross = 200 + Math.max(0, d.revenue - 600) * 0.30;
-      const p = payrollMap.get(d.salesperson) || { salesperson:d.salesperson, days:0, revenue:0, gross_wage:0, deduction_64:0, net_wage:0, daily:[] };
-      p.days += 1;
-      p.revenue += d.revenue;
-      p.gross_wage += gross;
-      p.daily.push({
-        sale_date:d.sale_date,
-        revenue:Number(d.revenue.toFixed(2)),
-        cash:Number(d.cash.toFixed(2)),
-        twint:Number(d.twint.toFixed(2)),
-        gross_wage:Number(gross.toFixed(2))
-      });
-      payrollMap.set(d.salesperson, p);
-    }
-
-    const market_payroll = [...payrollMap.values()].map(p => {
-      const deduction = p.gross_wage * 0.064;
-      return {
-        salesperson:p.salesperson,
-        days:p.days,
-        revenue:Number(p.revenue.toFixed(2)),
-        gross_wage:Number(p.gross_wage.toFixed(2)),
-        deduction_64:Number(deduction.toFixed(2)),
-        net_wage:Number((p.gross_wage - deduction).toFixed(2)),
-        daily:p.daily.sort((a,b)=>a.sale_date.localeCompare(b.sale_date))
-      };
-    }).sort((a,b)=>a.salesperson.localeCompare(b.salesperson,'de-CH'));
+    const market_payroll = computeMarketPayroll(manual.rows);
 
     res.json({
       month,
@@ -1332,6 +1341,87 @@ app.delete('/api/manual-sales/:id', requireLogin, requireCsrf, async (req, res) 
   res.json({ ok:true });
 });
 
+
+// Lohnabrechnung Märit Bern als A4-Druckseite (im Druckdialog „Als PDF speichern“).
+app.get('/payroll-slip', async (req, res) => {
+  try {
+    if (!req.session?.user?.id) return res.redirect('/');
+    const { month, start, next } = monthRange(req.query.month);
+    const person = String(req.query.person || '');
+    if (!['Victoria','Sali'].includes(person)) return res.status(400).send('Unbekannte Person.');
+
+    const manual = await pool.query(`
+      SELECT sale_date,category,amount_chf,salesperson,cash_chf,twint_chf
+      FROM manual_sales
+      WHERE category='Märit Bern' AND salesperson=$3
+        AND sale_date >= $1::date AND sale_date < $2::date
+      ORDER BY sale_date,created_at
+    `, [start, next, person]);
+    const p = computeMarketPayroll(manual.rows)[0];
+    if (!p) return res.status(404).type('html').send(`<!doctype html><meta charset="utf-8"><p>Für ${escapeHtml(person)} gibt es im ${escapeHtml(month)} keine Märit-Bern-Buchungen.</p><p><a href="/">Zurück</a></p>`);
+
+    const [y, m] = month.split('-').map(Number);
+    const monthLabel = new Intl.DateTimeFormat('de-CH', { month: 'long', year: 'numeric' }).format(new Date(y, m - 1, 15));
+    const lastDay = new Date(y, m, 0).getDate();
+    const chf = v => new Intl.NumberFormat('de-CH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(v || 0));
+    const dmy = iso => { const [yy, mm, dd] = String(iso).slice(0,10).split('-'); return `${dd}.${mm}.${yy}`; };
+    const created = new Intl.DateTimeFormat('de-CH', { timeZone: 'Europe/Zurich' }).format(new Date());
+
+    const rows = p.daily.map(d => {
+      const extra = Math.max(0, d.revenue - 600);
+      return `<tr><td>${dmy(d.sale_date)}</td><td class="num">${chf(d.cash)}</td><td class="num">${chf(d.twint)}</td><td class="num">${chf(d.revenue)}</td><td class="num">200.00</td><td class="num">${chf(extra * 0.30)}</td><td class="num strong">${chf(d.gross_wage)}</td></tr>`;
+    }).join('');
+
+    await audit(req, 'payroll_slip.view', 'payroll', `${person}:${month}`, { gross_wage: p.gross_wage, net_wage: p.net_wage });
+    res.set('Cache-Control', 'no-store');
+    res.type('html').send(`<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lohnabrechnung ${escapeHtml(person)} ${escapeHtml(month)}</title><style>
+@page{size:A4;margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0}
+body{font-family:Arial,Helvetica,sans-serif;color:#111;background:#fff;font-size:11.5px;line-height:1.4}
+.sheet{position:relative;width:210mm;min-height:297mm;padding:20mm 18mm 16mm 22mm}
+.head{display:flex;justify-content:space-between;align-items:flex-start}
+.sender{font-size:10.5px;line-height:1.5}.sender strong{font-size:12.5px;display:block;margin-bottom:.8mm}
+.recipient{margin-top:22mm;margin-left:83mm;font-size:12px}.recipient strong{font-size:15px}
+h1{font-size:24px;margin:16mm 0 2mm}.sub{color:#555;margin-bottom:8mm}
+.meta{display:grid;grid-template-columns:repeat(3,1fr);gap:6mm;margin-bottom:8mm}.meta div{border-bottom:1px solid #aaa;padding-bottom:2mm}
+.meta span{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#666;margin-bottom:1mm}.meta strong{font-size:13px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#444;margin:8mm 0 2mm}
+table{width:100%;border-collapse:collapse}th{font-size:9px;text-transform:uppercase;letter-spacing:.4px;color:#555;text-align:left;border-bottom:1.5px solid #222;padding:2mm 1.5mm}
+td{padding:2.2mm 1.5mm;border-bottom:1px solid #ddd}.num{text-align:right}.strong{font-weight:700}
+tfoot td{border-top:1.5px solid #222;border-bottom:none;font-weight:700}
+.summary{width:95mm;margin-left:auto;margin-top:8mm}.summary td{border-bottom:1px solid #ddd}
+.summary .net td{font-size:14px;font-weight:800;border-top:2px solid #111;border-bottom:2px solid #111}
+.rule{font-size:9.5px;color:#555;margin-top:8mm;line-height:1.5}
+.sign{display:grid;grid-template-columns:1fr 1fr;gap:20mm;margin-top:22mm}.sign div{border-top:1px solid #111;padding-top:1.5mm;font-size:9.5px;color:#444}
+footer{position:absolute;left:22mm;right:18mm;bottom:12mm;border-top:1px solid #ddd;padding-top:2mm;color:#777;font-size:9px}
+@media screen{body{background:#ececec;padding:12px}.sheet{margin:0 auto;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.14)}}
+</style></head><body><section class="sheet">
+<div class="head"><div class="sender"><strong>fungi futuri GmbH</strong>Erlenstrasse 43<br>3612 Steffisburg</div></div>
+<div class="recipient"><strong>${escapeHtml(person)}</strong></div>
+<h1>Lohnabrechnung</h1><div class="sub">Märit Bern · ${escapeHtml(monthLabel)}</div>
+<div class="meta">
+  <div><span>Abrechnungsperiode</span><strong>01.${String(m).padStart(2,'0')}.${y} – ${lastDay}.${String(m).padStart(2,'0')}.${y}</strong></div>
+  <div><span>Arbeitstage</span><strong>${p.days}</strong></div>
+  <div><span>Erstellt am</span><strong>${created}</strong></div>
+</div>
+<h2>Verkaufstage</h2>
+<table><thead><tr><th>Datum</th><th class="num">Bar</th><th class="num">TWINT</th><th class="num">Tagesumsatz</th><th class="num">Grundlohn</th><th class="num">30 % über 600</th><th class="num">Tageslohn</th></tr></thead>
+<tbody>${rows}</tbody>
+<tfoot><tr><td>Total</td><td class="num">${chf(p.daily.reduce((a,d)=>a+d.cash,0))}</td><td class="num">${chf(p.daily.reduce((a,d)=>a+d.twint,0))}</td><td class="num">${chf(p.revenue)}</td><td></td><td></td><td class="num">${chf(p.gross_wage)}</td></tr></tfoot></table>
+<table class="summary"><tbody>
+<tr><td>Bruttolohn</td><td class="num">CHF ${chf(p.gross_wage)}</td></tr>
+<tr><td>Abzug 6.4 %</td><td class="num">− CHF ${chf(p.deduction_64)}</td></tr>
+<tr class="net"><td>Nettolohn / Auszahlung</td><td class="num">CHF ${chf(p.net_wage)}</td></tr>
+</tbody></table>
+<div class="rule">Berechnung pro Verkaufstag: CHF 200.00 Grundlohn bis CHF 600.00 Tagesumsatz, darüber zusätzlich 30 % des Mehrumsatzes. Vom Monats-Bruttolohn werden 6.4 % abgezogen.</div>
+<div class="sign"><div>Ort, Datum / Arbeitgeber</div><div>Ort, Datum / ${escapeHtml(person)}</div></div>
+<footer>${DRY_RUN ? 'TESTMODUS · ' : ''}Erstellt über das bexio Lieferportal</footer>
+</section><script src="/print.js?v=1.14"></script></body></html>`);
+  } catch (err) {
+    console.error('Lohnabrechnung fehlgeschlagen:', err);
+    if (!res.headersSent) res.status(500).type('html').send(`<!doctype html><meta charset="utf-8"><p>Lohnabrechnung konnte nicht erstellt werden: ${escapeHtml(err.message || '')}</p><p><a href="/">Zurück</a></p>`);
+  }
+});
 
 app.get('/print', async (req, res) => {
   try {
