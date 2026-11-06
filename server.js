@@ -1615,7 +1615,11 @@ app.get('/print', async (req, res) => {
     res.type('html').send(`<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lieferscheine</title><style>
       @page{size:A4;margin:0}
       *{box-sizing:border-box}html,body{margin:0;padding:0}body{font-family:Arial,Helvetica,sans-serif;color:#111;background:#fff;font-size:11.5px;line-height:1.35}
-      .sheet{position:relative;width:210mm;height:297mm;page-break-after:always;break-after:page;overflow:hidden}.sheet:last-child{page-break-after:auto;break-after:auto}
+      /* Blatt 1 mm kürzer als A4: verhindert, dass Rundungen beim Drucken jedes Blatt minimal
+         auf die nächste Seite schieben (= leere Seite zwischen den Lieferscheinen).
+         Umbruch VOR jedem weiteren Blatt statt nach jedem Blatt: kein leeres Blatt am Ende. */
+      .sheet{position:relative;width:210mm;height:296mm;overflow:hidden;break-inside:avoid;page-break-inside:avoid}
+      .sheet+.sheet{break-before:page;page-break-before:always}
       .sender{position:absolute;left:32mm;top:30mm;font-size:10.5px;line-height:1.5}.sender-name{font-size:12.5px;font-weight:700;margin-bottom:.8mm}
       /* C5 Sichtfenster rechts: Empfängerblock ca. 20 mm vom rechten Blattrand,
          43 mm von oben. 85 x 43 mm bleibt innerhalb üblicher 90/100 x 45 mm Fenster. */
@@ -1628,7 +1632,7 @@ app.get('/print', async (req, res) => {
       table.items{width:100%;border-collapse:collapse;table-layout:fixed}table.items th{font-size:9px;text-transform:uppercase;letter-spacing:.45px;color:#555;border-bottom:1.5px solid #222;padding:2.5mm 1.5mm;text-align:left}table.items td{padding:3.5mm 1.5mm;border-bottom:1px solid #ddd;vertical-align:top;font-size:11.5px}.pos{width:13mm}.qty{width:23mm;text-align:right!important}.unit{width:20mm}.product{overflow-wrap:anywhere}
       .spacer{flex:1;min-height:14mm}.note{font-size:10.5px;margin-top:8mm}footer{border-top:1px solid #ddd;padding-top:2.5mm;margin-top:7mm;color:#777;font-size:9px}
       @media screen{body{background:#ececec;padding:12px}.sheet{background:#fff;margin:0 auto 16px;box-shadow:0 2px 12px rgba(0,0,0,.14)}.window-address{outline:1px dashed #79a7d8}.window-address:before{content:'C5 Sichtfenster rechts';position:absolute;right:1mm;top:-5mm;font-size:7px;color:#5e86b1}}
-      @media print{body{background:#fff}.sheet{margin:0}.window-address{outline:none}}
+      @media print{html,body{background:#fff;height:auto}.sheet{margin:0;box-shadow:none}.window-address{outline:none}}
     </style></head><body>${pages}<script src="/print.js?v=1.14"></script></body></html>`);
   } catch (err) {
     console.error('Print route failed:', err);
