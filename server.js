@@ -488,8 +488,9 @@ async function findOrCreateMonthlyOrder(contactId, dateStr) {
   return bexio('/2.0/kb_order', { method: 'POST', body: JSON.stringify(payload) });
 }
 
-async function createArticlePosition(orderId, article, qty) {
-  const required = ['unit_id','account_id','tax_id','sale_price'];
+async function createArticlePosition(orderId, article, qty, unitPrice) {
+  const required = ['unit_id','account_id','tax_id'];
+  if (unitPrice == null) required.push('sale_price');
   for (const f of required) if (article[f] === null || article[f] === undefined || article[f] === '') {
     throw new Error(`Artikel „${article.name}“ hat in bexio kein ${f}. Bitte Stammdaten prüfen.`);
   }
@@ -501,7 +502,9 @@ async function createArticlePosition(orderId, article, qty) {
       account_id: Number(article.account_id),
       tax_id: Number(article.tax_id),
       text: article.name,
-      unit_price: Number(article.sale_price).toFixed(6),
+      // Preis aus der Bestellung (Kundenpreis oder Standardpreis beim Erfassen);
+      // nur bei sehr alten Einträgen ohne Preis der aktuelle bexio-Preis.
+      unit_price: Number(unitPrice ?? article.sale_price).toFixed(6),
       discount_in_percent: '0.000000',
       is_optional: false,
       article_id: Number(article.id)
@@ -588,7 +591,8 @@ async function processDraft(req, draftId) {
       if (!positionId) {
         const article = articleMap.get(Number(item.article_id));
         if (!article) throw new Error(`Artikel ${item.article_id} ist nicht mehr in einer freigegebenen Artikelgruppe.`);
-        const position = await createArticlePosition(order.id, article, item.quantity);
+        const itemPrice = item.unit_price == null ? null : Number(item.unit_price);
+        const position = await createArticlePosition(order.id, article, item.quantity, Number.isFinite(itemPrice) ? itemPrice : null);
         positionId = Number(position.id);
         await pool.query('UPDATE draft_order_items SET bexio_position_id=$2 WHERE id=$1', [item.id, positionId]);
       }
@@ -963,7 +967,7 @@ app.post('/api/admin/products', requireLogin, requireAdmin, requireCsrf, async (
 app.get('/api/drafts', requireLogin, async (req, res) => {
   await releaseStaleProcessing();
   const r = await pool.query(`
-    SELECT d.*, COALESCE(json_agg(json_build_object('id',i.id,'article_id',i.article_id,'article_name',i.article_name,'quantity',i.quantity,'unit_name',i.unit_name,'unit_price',i.unit_price) ORDER BY i.id)
+    SELECT d.*, COALESCE(json_agg(json_build_object('id',i.id,'article_id',i.article_id,'article_name',i.article_name,'quantity',i.quantity,'unit_name',i.unit_name,'unit_price',i.unit_price,'price_source',i.price_source) ORDER BY i.id)
       FILTER (WHERE i.id IS NOT NULL), '[]') AS items
     FROM draft_orders d LEFT JOIN draft_order_items i ON i.draft_order_id=d.id
     WHERE d.created_at > now() - interval '60 days' AND d.archived_at IS NULL
@@ -1017,10 +1021,12 @@ app.post('/api/drafts', requireLogin, requireCsrf, async (req, res) => {
       const existing = await pool.query('SELECT id FROM draft_orders WHERE idempotency_key=$1', [idem]);
       return res.status(200).json({ id: existing.rows[0]?.id, duplicate: true });
     }
+    const customPrices = await getCustomerPriceMap(contactId, client);
     for (const { article, qty } of clean) {
+      const custom = customPrices.get(Number(article.id));
       await client.query(
-        'INSERT INTO draft_order_items(draft_order_id,article_id,article_name,quantity,unit_name,unit_price) VALUES($1,$2,$3,$4,$5,$6)',
-        [id, article.id, article.name, qty, article.unit_name || '', Number(article.sale_price || 0)]
+        'INSERT INTO draft_order_items(draft_order_id,article_id,article_name,quantity,unit_name,unit_price,price_source) VALUES($1,$2,$3,$4,$5,$6,$7)',
+        [id, article.id, article.name, qty, article.unit_name || '', custom ?? Number(article.sale_price || 0), custom != null ? 'customer' : 'standard']
       );
     }
     await client.query('COMMIT');
@@ -1367,6 +1373,66 @@ app.delete('/api/manual-sales/:id', requireLogin, requireCsrf, async (req, res) 
 });
 
 
+// ---------- Kundenspezifische Preise ----------
+async function getCustomerPriceMap(contactId, db = pool) {
+  const r = await db.query('SELECT article_id,unit_price FROM customer_prices WHERE contact_id=$1', [contactId]);
+  return new Map(r.rows.map(x => [Number(x.article_id), Number(x.unit_price)]));
+}
+
+// Übersicht: welche Kunden haben Sonderpreise (Admin).
+app.get('/api/customer-prices', requireLogin, requireAdmin, async (req, res) => {
+  const r = await pool.query('SELECT contact_id, count(*)::int AS count, max(updated_at) AS updated_at FROM customer_prices GROUP BY contact_id ORDER BY contact_id');
+  res.json(r.rows);
+});
+
+// Preise eines Kunden (für Preisanzeige beim Erfassen; alle angemeldeten Benutzer).
+app.get('/api/customer-prices/:contactId', requireLogin, async (req, res) => {
+  const contactId = Number(req.params.contactId);
+  if (!Number.isInteger(contactId) || contactId <= 0) return res.status(422).json({ error: 'Ungültiger Kunde.' });
+  const map = await getCustomerPriceMap(contactId);
+  res.json([...map].map(([article_id, unit_price]) => ({ article_id, unit_price })));
+});
+
+// Alle Sonderpreise eines Kunden ersetzen (Admin). Leere Preise = Standardpreis.
+app.put('/api/customer-prices/:contactId', requireLogin, requireAdmin, requireCsrf, async (req, res) => {
+  const contactId = Number(req.params.contactId);
+  if (!Number.isInteger(contactId) || contactId <= 0) return res.status(422).json({ error: 'Ungültiger Kunde.' });
+  const input = Array.isArray(req.body?.prices) ? req.body.prices : null;
+  if (!input || input.length > 2000) return res.status(422).json({ error: 'Ungültige Preisliste.' });
+  const cat = await catalog();
+  if (!cat.contacts.some(c => Number(c.id) === contactId)) return res.status(422).json({ error: 'Dieser Kunde gehört nicht zu einer freigegebenen Kundengruppe.' });
+  const articleIds = new Set(cat.articles.map(a => Number(a.id)));
+  const clean = new Map();
+  for (const p of input) {
+    const articleId = Number(p?.article_id);
+    if (p?.unit_price === '' || p?.unit_price == null) continue;
+    const price = Number(String(p.unit_price).replace(',', '.'));
+    if (!articleIds.has(articleId)) return res.status(422).json({ error: `Artikel ${articleId} ist nicht freigegeben.` });
+    if (!Number.isFinite(price) || price < 0 || price > 1000000) return res.status(422).json({ error: 'Preise müssen Zahlen ab 0 sein.' });
+    clean.set(articleId, Math.round(price * 10000) / 10000);
+  }
+  const before = await getCustomerPriceMap(contactId);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM customer_prices WHERE contact_id=$1', [contactId]);
+    for (const [articleId, price] of clean) {
+      await client.query(
+        'INSERT INTO customer_prices(contact_id,article_id,unit_price,updated_by,updated_at) VALUES($1,$2,$3,$4,now())',
+        [contactId, articleId, price, req.session.user.id]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
+  finally { client.release(); }
+  const changes = [];
+  for (const id of new Set([...before.keys(), ...clean.keys()])) {
+    if (before.get(id) !== clean.get(id)) changes.push({ article_id: id, from: before.get(id) ?? null, to: clean.get(id) ?? null });
+  }
+  await audit(req, 'customer_prices.update', 'contact', contactId, { count: clean.size, changes: changes.slice(0, 100) });
+  res.json({ ok: true, count: clean.size });
+});
+
 // ---------- Mitarbeitende (für Märit-Bern-Erfassung und Lohnabrechnung) ----------
 function cleanEmployee(body) {
   const t = (v, max) => String(v ?? '').trim().slice(0, max) || null;
@@ -1621,9 +1687,10 @@ app.get('/print', async (req, res) => {
       .sheet{position:relative;width:210mm;height:296mm;overflow:hidden;break-inside:avoid;page-break-inside:avoid}
       .sheet+.sheet{break-before:page;page-break-before:always}
       .sender{position:absolute;left:32mm;top:30mm;font-size:10.5px;line-height:1.5}.sender-name{font-size:12.5px;font-weight:700;margin-bottom:.8mm}
-      /* C5 Sichtfenster rechts: Empfängerblock ca. 20 mm vom rechten Blattrand,
-         43 mm von oben. 85 x 43 mm bleibt innerhalb üblicher 90/100 x 45 mm Fenster. */
-      .window-address{position:absolute;left:105mm;top:43mm;width:85mm;height:43mm;padding:3mm 4mm;font-size:11.5px;line-height:1.42;overflow:hidden}
+      /* C5 Sichtfenster rechts (Schweizer Fensterposition): Adresstext beginnt
+         118 mm vom linken und 52 mm vom oberen Blattrand. Box inkl. Innenabstand
+         116/49 mm, 84 x 43 mm – bleibt innerhalb des 100 x 45 mm Fensters. */
+      .window-address{position:absolute;left:116mm;top:49mm;width:84mm;height:43mm;padding:3mm 2mm;font-size:11.5px;line-height:1.42;overflow:hidden}
       .window-address .recipient-name{font-weight:800;font-size:15px;line-height:1.25;margin-bottom:1.5mm}
       .document-area{position:absolute;left:15mm;right:15mm;top:96mm;bottom:14mm;display:flex;flex-direction:column}
       .doc-head{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1.5px solid #111;padding-bottom:4mm}.doc-title{font-size:28px;font-weight:700}

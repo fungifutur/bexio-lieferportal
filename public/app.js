@@ -1,7 +1,7 @@
 'use strict';
 
 const $ = s => document.querySelector(s);
-const state = { csrf:'', catalog:null, selectedContact:null, drafts:[], user:null, adminProducts:[], employees:[], draftKey:newDraftKey() };
+const state = { csrf:'', catalog:null, selectedContact:null, drafts:[], user:null, adminProducts:[], employees:[], customerPrices:new Map(), cp:null, draftKey:newDraftKey() };
 
 // Lokales Datum (Browser-Zeitzone) als 'YYYY-MM-DD'. toISOString() wäre UTC und liefert
 // in der Schweiz zwischen 00:00 und 01:00/02:00 Uhr noch den Vortag.
@@ -50,6 +50,7 @@ async function boot(){
   if (!s.authenticated) return showLogin();
   state.csrf = s.csrf; state.user = s.user || null;
   $('#productAdminBtn').hidden = state.user?.role !== 'admin';
+  $('#customerPriceBtn').hidden = state.user?.role !== 'admin';
   $('#setupCard').hidden = true; $('#loginCard').hidden = true; $('#app').hidden = false;
   $('#modeBadge').textContent = s.dryRun ? 'TESTMODUS – keine bexio-Schreibzugriffe' : 'PRODUKTIV';
   $('#modeBadge').className = `badge ${s.dryRun?'warn':''}`;
@@ -213,16 +214,51 @@ $('#contactSearch').addEventListener('input',()=>{
   box.querySelectorAll('.result').forEach(el=>el.addEventListener('click',()=>selectContact(Number(el.dataset.id))));
 });
 
-function selectContact(id){
+async function selectContact(id){
   const c=state.catalog.contacts.find(x=>Number(x.id)===Number(id)); if(!c)return;
   state.selectedContact=c; $('#selectedContact').hidden=false; $('#selectedContact').textContent=`${c.name}${c.city?` · ${c.city}`:''}`; $('#contactResults').innerHTML=''; $('#contactSearch').value='';
+  state.customerPrices=new Map();
+  try{
+    const rows=await api(`/api/customer-prices/${encodeURIComponent(c.id)}`);
+    if(state.selectedContact?.id!==c.id) return; // inzwischen anderer Kunde gewählt
+    state.customerPrices=new Map(rows.map(r=>[Number(r.article_id),Number(r.unit_price)]));
+    if(state.customerPrices.size) $('#selectedContact').textContent+=` · ${state.customerPrices.size} Kundenpreis${state.customerPrices.size===1?'':'e'}`;
+  }catch(_){}
+  refreshItemPrices();
+}
+// Preis für den gewählten Kunden: Kundenpreis falls vorhanden, sonst Standardpreis.
+function priceFor(a){
+  const custom=state.customerPrices?.get(Number(a.id));
+  return custom!=null?{price:custom,custom:true}:{price:Number(a.sale_price||0),custom:false};
+}
+function articleOptionLabel(a){
+  const p=priceFor(a);
+  return `${a.name}${a.code?` (${a.code})`:''} · ${money(p.price)}${a.unit_name?` / ${a.unit_name}`:''}${p.custom?' · Kundenpreis':''}`;
+}
+function updatePriceHint(row){
+  const select=row.querySelector('.article'), hint=row.querySelector('.price-hint');
+  const a=state.catalog?.articles.find(x=>Number(x.id)===Number(select.value));
+  if(!a){hint.textContent='Preis wird aus bexio geladen.';return}
+  const p=priceFor(a);
+  hint.innerHTML=p.custom
+    ? `<span class="custom-price">Kundenpreis ${esc(money(p.price))}${a.unit_name?` pro ${esc(a.unit_name)}`:''}</span> · Standard ${esc(money(a.sale_price))}`
+    : `${esc(money(p.price))}${a.unit_name?` pro ${esc(a.unit_name)}`:''}`;
+}
+function refreshItemPrices(){
+  document.querySelectorAll('.item-row').forEach(row=>{
+    row.querySelectorAll('.article option[value]').forEach(o=>{
+      if(!o.value) return;
+      const a=state.catalog?.articles.find(x=>Number(x.id)===Number(o.value)); if(a) o.textContent=articleOptionLabel(a);
+    });
+    updatePriceHint(row);
+  });
 }
 
 $('#addItemBtn').addEventListener('click',addItemRow);
 function addItemRow(){
   if(!state.catalog) return;
   const div=document.createElement('div'); div.className='item-row';
-  const options=state.catalog.articles.map(a=>`<option value="${a.id}">${esc(a.name)}${a.code?` (${esc(a.code)})`:''} · ${esc(money(a.sale_price))}${a.unit_name?` / ${esc(a.unit_name)}`:''}</option>`).join('');
+  const options=state.catalog.articles.map(a=>`<option value="${a.id}">${esc(articleOptionLabel(a))}</option>`).join('');
   div.innerHTML=`<div class="article-wrap">
     <select class="article"><option value="">Produkt auswählen …</option>${options}</select>
     <div class="price-hint muted">Preis wird aus bexio geladen.</div>
@@ -230,11 +266,7 @@ function addItemRow(){
   <input class="quantity" type="number" min="0.001" step="0.001" placeholder="Menge">
   <button class="remove-item" type="button" title="Entfernen">×</button>`;
   const select=div.querySelector('.article');
-  const hint=div.querySelector('.price-hint');
-  select.addEventListener('change',()=>{
-    const a=state.catalog.articles.find(x=>Number(x.id)===Number(select.value));
-    hint.textContent=a?`${money(a.sale_price)}${a.unit_name?` pro ${a.unit_name}`:''}`:'Preis wird aus bexio geladen.';
-  });
+  select.addEventListener('change',()=>updatePriceHint(div));
   div.querySelector('.remove-item').addEventListener('click',()=>div.remove());
   $('#items').appendChild(div);
 }
@@ -252,7 +284,7 @@ $('#saveDraftBtn').addEventListener('click',async()=>{
     const r=await api('/api/drafts',{method:'POST',body:{contact_id:state.selectedContact.id,contact_name:state.selectedContact.name,delivery_date:$('#deliveryDate').value,items,client_key:state.draftKey}});
     msg($('#draftMsg'),r?.duplicate?'Diese Bestellung war bereits gespeichert (kein Duplikat angelegt).':'Bestellung zur Warteliste hinzugefügt.','ok');
     state.draftKey=newDraftKey();
-    state.selectedContact=null; $('#selectedContact').hidden=true; $('#items').innerHTML=''; addItemRow(); await loadDrafts();
+    state.selectedContact=null; state.customerPrices=new Map(); $('#selectedContact').hidden=true; $('#items').innerHTML=''; addItemRow(); await loadDrafts();
   }catch(e){msg($('#draftMsg'),e.message,'error')}
   finally{btn.disabled=false}
 });
@@ -267,7 +299,7 @@ function renderDrafts(){
   box.innerHTML=state.drafts.map(d=>`<div class="draft">
     <div class="selectline"><input type="checkbox" class="draftCheck" data-id="${d.id}" ${['draft','failed','created'].includes(d.status)?'':'disabled'}>
       <div style="flex:1"><div class="draft-top"><div><div class="draft-title">${esc(d.contact_name)}</div><div class="draft-meta">${esc(displayDate(d.delivery_date))} ${d.bexio_delivery_nr?`· ${esc(d.bexio_delivery_nr)}`:''}</div></div><span class="status ${esc(d.status)}">${statusLabel(d.status)}</span></div>
-      <ul class="draft-items">${d.items.map(i=>`<li>${esc(i.article_name)} · ${qty(i.quantity)}</li>`).join('')}</ul>
+      <ul class="draft-items">${d.items.map(i=>`<li>${esc(i.article_name)} · ${qty(i.quantity)}${i.unit_price!=null?` · ${esc(money(i.unit_price))}${i.price_source==='customer'?' <span class="badge" style="margin:0;padding:1px 6px">Kundenpreis</span>':''}`:''}</li>`).join('')}</ul>
       ${d.error_message?`<div class="draft-error">${esc(d.error_message)}</div>`:''}
       <div class="draft-actions">
         ${['draft','failed'].includes(d.status)?`<button type="button" class="small createOneBtn" data-id="${d.id}">Lieferschein erstellen</button><button type="button" class="danger small deleteDraftBtn" data-id="${d.id}">Bestellung löschen</button>`:''}
@@ -584,4 +616,71 @@ $('#manualSaleRows').addEventListener('click',async(e)=>{
     await api(`/api/manual-sales/${btn.dataset.id}`,{method:'DELETE'});
     await loadReporting();
   }catch(err){alert(err.message)}
+});
+
+
+// ---------- Kundenpreise (Admin) ----------
+$('#customerPriceBtn').addEventListener('click',async()=>{
+  $('#customerPriceCard').hidden=false;
+  $('#customerPriceCard').scrollIntoView({behavior:'smooth',block:'start'});
+  await loadCustomerPriceOverview();
+});
+$('#closeCustomerPriceBtn').addEventListener('click',()=>{$('#customerPriceCard').hidden=true});
+function contactById(id){ return state.catalog?.contacts.find(c=>Number(c.id)===Number(id)); }
+async function loadCustomerPriceOverview(){
+  try{
+    const rows=await api('/api/customer-prices');
+    $('#cpOverview').innerHTML=rows.length
+      ? '<span class="muted" style="width:100%">Kunden mit Sonderpreisen:</span>'+rows.map(r=>{const c=contactById(r.contact_id);return `<button type="button" class="chip" data-id="${r.contact_id}">${esc(c?c.name:`Kontakt ${r.contact_id}`)} · ${r.count}</button>`}).join('')
+      : '<span class="muted">Noch keine Kundenpreise erfasst. Kunde links suchen.</span>';
+  }catch(e){msg($('#cpMsg'),e.message,'error')}
+}
+$('#cpOverview').addEventListener('click',e=>{const b=e.target.closest('.chip'); if(b) openCustomerPrices(Number(b.dataset.id));});
+$('#cpContactSearch').addEventListener('input',()=>{
+  const q=$('#cpContactSearch').value.trim().toLowerCase(), box=$('#cpContactResults');
+  if(!state.catalog||!q){box.innerHTML='';return}
+  const rows=state.catalog.contacts.filter(c=>`${c.name} ${c.city} ${c.nr}`.toLowerCase().includes(q)).slice(0,30);
+  box.innerHTML=rows.map(c=>`<div class="result" data-id="${c.id}"><strong>${esc(c.name)}</strong>${c.city?` · ${esc(c.city)}`:''}</div>`).join('');
+});
+$('#cpContactResults').addEventListener('click',e=>{const r=e.target.closest('.result'); if(r) openCustomerPrices(Number(r.dataset.id));});
+async function openCustomerPrices(contactId){
+  const c=contactById(contactId); if(!c){msg($('#cpMsg'),'Kunde ist nicht in einer freigegebenen Kundengruppe.','error');return}
+  $('#cpContactResults').innerHTML=''; $('#cpContactSearch').value=''; msg($('#cpMsg'),'');
+  try{
+    const rows=await api(`/api/customer-prices/${encodeURIComponent(contactId)}`);
+    state.cp={contact:c,prices:new Map(rows.map(r=>[Number(r.article_id),String(r.unit_price)]))};
+    $('#cpContactName').textContent=`${c.name}${c.city?` · ${c.city}`:''}`;
+    $('#cpEditor').hidden=false; $('#cpProductSearch').value='';
+    renderCustomerPriceRows();
+  }catch(e){msg($('#cpMsg'),e.message,'error')}
+}
+function renderCustomerPriceRows(){
+  if(!state.cp) return;
+  const q=$('#cpProductSearch').value.trim().toLowerCase();
+  const arts=(state.catalog?.articles||[]).filter(a=>!q||`${a.name} ${a.code||''}`.toLowerCase().includes(q));
+  $('#cpRows').innerHTML=arts.map(a=>{
+    const v=state.cp.prices.get(Number(a.id));
+    return `<tr class="${v!=null&&v!==''?'custom':''}"><td><strong>${esc(a.name)}</strong>${a.code?` <small>${esc(a.code)}</small>`:''}${a.unit_name?` <small>/ ${esc(a.unit_name)}</small>`:''}</td>
+      <td class="num">${esc(money(a.sale_price))}</td>
+      <td class="num"><input class="cpPrice" data-id="${a.id}" inputmode="decimal" placeholder="Standard" value="${v!=null?esc(Number(v).toFixed(2)):''}"></td></tr>`;
+  }).join('')||'<tr><td colspan="3" class="muted">Keine Produkte gefunden.</td></tr>';
+}
+$('#cpProductSearch').addEventListener('input',renderCustomerPriceRows);
+$('#cpRows').addEventListener('input',e=>{
+  const i=e.target.closest('.cpPrice'); if(!i||!state.cp) return;
+  const v=i.value.trim().replace(',','.');
+  if(v==='') state.cp.prices.delete(Number(i.dataset.id)); else state.cp.prices.set(Number(i.dataset.id),v);
+  i.closest('tr').classList.toggle('custom',v!=='');
+});
+$('#saveCustomerPriceBtn').addEventListener('click',async()=>{
+  if(!state.cp) return;
+  const btn=$('#saveCustomerPriceBtn'); btn.disabled=true; msg($('#cpMsg'),'Speichere …');
+  try{
+    const prices=[...state.cp.prices].map(([article_id,unit_price])=>({article_id,unit_price}));
+    const r=await api(`/api/customer-prices/${encodeURIComponent(state.cp.contact.id)}`,{method:'PUT',body:{prices}});
+    msg($('#cpMsg'),`${r.count} Kundenpreis${r.count===1?'':'e'} für ${state.cp.contact.name} gespeichert. Gilt für neu erfasste Bestellungen.`,'ok');
+    await loadCustomerPriceOverview();
+    if(state.selectedContact?.id===state.cp.contact.id) selectContact(state.cp.contact.id);
+  }catch(e){msg($('#cpMsg'),e.message,'error')}
+  finally{btn.disabled=false}
 });
