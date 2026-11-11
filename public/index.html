@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>bexio Lieferportal</title>
-  <link rel="stylesheet" href="/style.css?v=1.21">
+  <link rel="stylesheet" href="/style.css?v=1.22">
 </head>
 <body>
   <main class="wrap">
@@ -35,7 +35,7 @@
     <section id="app" hidden>
       <header class="topbar">
         <div><h1>bexio Lieferportal</h1><div id="modeBadge" class="badge"></div></div>
-        <div class="actions"><button id="reportingBtn" class="secondary">Auswertung</button><button id="productAdminBtn" class="secondary" hidden>Produkte verwalten</button><button id="bexioBtn" class="secondary">bexio verbinden</button><button id="logoutBtn" class="secondary">Abmelden</button></div>
+        <div class="actions"><button id="reportingBtn" class="secondary">Auswertung</button><button id="productAdminBtn" class="secondary" hidden>Produkte verwalten</button><button id="customerPriceBtn" class="secondary" hidden>Kundenpreise</button><button id="bexioBtn" class="secondary">bexio verbinden</button><button id="logoutBtn" class="secondary">Abmelden</button></div>
       </header>
 
       <section class="grid two">
@@ -192,12 +192,35 @@
         </div>
       </section>
 
+      <section class="card" id="customerPriceCard" hidden>
+        <div class="row-head">
+          <div><h2>Kundenpreise</h2><p class="muted admin-sub">Sonderpreise pro Kunde. Leeres Feld = Standardpreis aus bexio. Der Preis wird beim Erfassen der Bestellung übernommen und so in den bexio-Auftrag und Lieferschein geschrieben.</p></div>
+          <button id="closeCustomerPriceBtn" class="secondary small" type="button">Schließen</button>
+        </div>
+        <div class="cp-pick">
+          <div class="cp-search-wrap">
+            <input id="cpContactSearch" placeholder="Kunde suchen …" autocomplete="off">
+            <div id="cpContactResults" class="results"></div>
+          </div>
+          <div id="cpOverview" class="cp-overview"></div>
+        </div>
+        <div id="cpEditor" hidden>
+          <h3 id="cpContactName"></h3>
+          <input id="cpProductSearch" placeholder="Produkt filtern …" autocomplete="off">
+          <div class="table-wrap"><table class="cp-table"><thead><tr><th>Produkt</th><th class="num">Standardpreis</th><th class="num">Kundenpreis CHF</th></tr></thead><tbody id="cpRows"></tbody></table></div>
+          <div class="product-admin-footer">
+            <button id="saveCustomerPriceBtn" type="button">Kundenpreise speichern</button>
+            <div id="cpMsg" class="msg"></div>
+          </div>
+        </div>
+      </section>
+
       <section class="card" id="diagCard">
         <h2>Status</h2>
         <div id="statusText" class="muted">Lade …</div>
       </section>
     </section>
   </main>
-  <script src="/app.js?v=1.21" defer></script>
+  <script src="/app.js?v=1.22" defer></script>
 </body>
 </html>

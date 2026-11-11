@@ -123,3 +123,15 @@ INSERT INTO employees(first_name)
 UPDATE manual_sales m SET employee_id = e.id
   FROM employees e
   WHERE m.employee_id IS NULL AND m.category = 'Märit Bern' AND m.salesperson = e.first_name;
+
+
+-- v1.22 Kundenspezifische Preise
+CREATE TABLE IF NOT EXISTS customer_prices (
+  contact_id INTEGER NOT NULL,
+  article_id INTEGER NOT NULL,
+  unit_price NUMERIC(14,4) NOT NULL CHECK (unit_price >= 0),
+  updated_by BIGINT REFERENCES app_users(id),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (contact_id, article_id)
+);
+ALTER TABLE draft_order_items ADD COLUMN IF NOT EXISTS price_source TEXT NOT NULL DEFAULT 'standard';

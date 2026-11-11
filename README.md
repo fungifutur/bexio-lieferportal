@@ -279,3 +279,10 @@ Tageslöhne werden jetzt pro Tag auf Rappen gerundet und dann summiert, damit di
 - Fehlende Angaben werden in der Liste rot markiert („Angaben für Lohnabrechnung unvollständig“).
 - Abzüge werden in ganzen Rappen berechnet (z. B. 215.00 × 5.3 % = 11.395 → 11.40).
 - Behoben: Bei „Märit Bern“ waren die Felder Betrag/Produkt/Menge fälschlich weiter sichtbar.
+
+## v1.22 Kundenpreise und Adressposition
+
+- **Kundenpreise** (Button „Kundenpreise“, nur Admin): pro Kunde Sonderpreise je Produkt erfassen; leeres Feld = Standardpreis aus bexio. Beim Erfassen einer Bestellung wird der gültige Preis gespeichert und beim Erstellen als `unit_price` in die bexio-Auftragsposition geschrieben – der Lieferschein übernimmt ihn aus dem Auftrag. Preisänderungen gelten für neu erfasste Bestellungen; bereits erfasste behalten ihren Preis. Jede Änderung steht im Audit-Log.
+- Im Bestellformular zeigt das Produkt-Dropdown nach Kundenwahl den Kundenpreis an, die Warteliste zeigt den Preis je Position mit Hinweis „Kundenpreis“.
+- bexio-Positionen verwenden jetzt immer den beim Erfassen gespeicherten Preis (vorher den aktuellen bexio-Preis zum Zeitpunkt der Verarbeitung). Dadurch stimmen Auswertung und bexio überein.
+- **Adresse Lieferschein:** Der Adresstext beginnt jetzt 118 mm vom linken und 52 mm vom oberen Blattrand (C5-Fenster rechts). Feinjustierung in `server.js` bei `.window-address` (`left`/`top`).
